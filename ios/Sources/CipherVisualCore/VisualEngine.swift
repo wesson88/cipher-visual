@@ -133,7 +133,7 @@ public final class VisualEngine {
 
     /// 销毁：teardown 全部句柄、清空队列、退订帧时钟。
     public func release() {
-        queue.removeAll()
+        for h in queue { withdraw(h) }
         for h in running { teardown(h, .teardown) }
         updateSubscription()
     }
@@ -143,11 +143,7 @@ public final class VisualEngine {
     @discardableResult
     func cancel(_ handle: VisualHandle, _ mode: CancelMode) -> Bool {
         if handle.queued {
-            // 排队中撤回：idle --withdraw--> completed，mode 无意义（尚未渲染过）
-            queue.removeAll { $0 === handle }
-            handle.queued = false
-            handle.endReason = .withdrawn
-            handle.setState(HandleFSM.transition(handle.state, .withdraw)!)
+            withdraw(handle)
             return true
         }
         switch mode {
@@ -202,6 +198,14 @@ public final class VisualEngine {
         running.append(handle)
         handle.setState(HandleFSM.transition(handle.state, .play)!)
         updateSubscription()
+    }
+
+    /// 排队中撤回：idle --withdraw--> completed。走统一收尾——释放排队裁决时预建的粒子场并通知渲染面。
+    private func withdraw(_ handle: VisualHandle) {
+        queue.removeAll { $0 === handle }
+        handle.queued = false
+        handle.endReason = .withdrawn
+        finish(handle, HandleFSM.transition(handle.state, .withdraw)!)
     }
 
     private func teardown(_ handle: VisualHandle, _ reason: EndReason) {

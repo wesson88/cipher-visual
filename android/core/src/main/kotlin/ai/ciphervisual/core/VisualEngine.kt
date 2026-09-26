@@ -105,7 +105,7 @@ public class VisualEngine(
 
     /** 销毁：teardown 全部句柄、清空队列、退订帧时钟。生命周期清理，不是收回策略。 */
     public fun release() {
-        queue.clear()
+        for (h in queue.toList()) withdraw(h)
         for (h in running.toList()) teardown(h, EndReason.TEARDOWN)
         updateSubscription()
     }
@@ -114,11 +114,7 @@ public class VisualEngine(
 
     internal fun cancel(handle: VisualHandle, mode: CancelMode): Boolean {
         if (handle.queued) {
-            // 排队中撤回：idle --withdraw--> completed，mode 无意义（尚未渲染过）
-            queue.remove(handle)
-            handle.queued = false
-            handle.endReason = EndReason.WITHDRAWN
-            handle.setState(HandleFsm.transition(handle.state, HandleEvent.WITHDRAW)!!)
+            withdraw(handle)
             return true
         }
         return when (mode) {
@@ -175,6 +171,14 @@ public class VisualEngine(
         running += handle
         handle.setState(HandleFsm.transition(handle.state, HandleEvent.PLAY)!!)
         updateSubscription()
+    }
+
+    /** 排队中撤回：idle --withdraw--> completed。走统一收尾——释放排队裁决时预建的粒子场并通知渲染面。 */
+    private fun withdraw(handle: VisualHandle) {
+        queue.remove(handle)
+        handle.queued = false
+        handle.endReason = EndReason.WITHDRAWN
+        finish(handle, HandleFsm.transition(handle.state, HandleEvent.WITHDRAW)!!)
     }
 
     private fun teardown(handle: VisualHandle, reason: EndReason) {
