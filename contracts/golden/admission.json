@@ -410,7 +410,8 @@
         600
       ],
       "decision": {
-        "kind": "queue"
+        "kind": "reject",
+        "reason": "overTotalBudget"
       }
     },
     {
@@ -440,7 +441,8 @@
         1250
       ],
       "decision": {
-        "kind": "queue"
+        "kind": "reject",
+        "reason": "overTotalBudget"
       }
     },
     {
@@ -534,7 +536,8 @@
         250
       ],
       "decision": {
-        "kind": "reject"
+        "kind": "reject",
+        "reason": "budgetFull"
       }
     },
     {
@@ -564,7 +567,8 @@
         600
       ],
       "decision": {
-        "kind": "reject"
+        "kind": "reject",
+        "reason": "overTotalBudget"
       }
     },
     {
@@ -594,7 +598,8 @@
         1250
       ],
       "decision": {
-        "kind": "reject"
+        "kind": "reject",
+        "reason": "overTotalBudget"
       }
     },
     {
@@ -722,13 +727,8 @@
         600
       ],
       "decision": {
-        "kind": "admit",
-        "grid": 0,
-        "evict": [
-          1,
-          3,
-          4
-        ]
+        "kind": "reject",
+        "reason": "overTotalBudget"
       }
     },
     {
@@ -758,13 +758,8 @@
         1250
       ],
       "decision": {
-        "kind": "admit",
-        "grid": 0,
-        "evict": [
-          1,
-          3,
-          4
-        ]
+        "kind": "reject",
+        "reason": "overTotalBudget"
       }
     },
     {

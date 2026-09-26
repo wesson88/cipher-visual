@@ -148,7 +148,6 @@ class DemoActivity : Activity() {
 
     private fun playRow(i: Int) {
         val (label, cv) = rows[i]
-        cv.attachedHandle?.takeIf { !it.state.isTerminal }?.cancel(CancelMode.TEARDOWN)
         val style = TextStyle(textPx, Color.DKGRAY)
         val listener = object : VisualListener {
             override fun onAnchor(handle: VisualHandle, anchorId: String) {
@@ -170,10 +169,11 @@ class DemoActivity : Activity() {
             VisualContent.Text(sources[i], style),
             VisualContent.Text(targets[i], style.copy(color = Color.rgb(0x30, 0x60, 0xE0))),
             holdMs,
-            PlayOptions(holdMode = if (jitterHold) HoldMode.JITTER else HoldMode.STATIC),
+            // 同一行重复点：库会先收回上一次（这里选 reverse），收回完成后再播新的
+            PlayOptions(holdMode = if (jitterHold) HoldMode.JITTER else HoldMode.STATIC, preemptMode = CancelMode.REVERSE),
             listener,
         )
-        if (result == PlayResult.Rejected) statusView.append("\n第 ${i + 1} 条被拒（dropNewest）")
+        if (result is PlayResult.Rejected) statusView.append("\n第 ${i + 1} 条被拒（${result.reason.wire}）")
     }
 
     private fun forEachHandle(block: (VisualHandle) -> Unit) {

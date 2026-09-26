@@ -242,7 +242,7 @@ class EngineTest {
     fun dropNewestRejects() {
         val engine = VisualEngine(ManualClock(), EngineConfig(overflowStrategy = OverflowStrategy.DROP_NEWEST, particleBudget = 40))
         assertIs<PlayResult.Started>(engine.play(request()))
-        assertEquals(PlayResult.Rejected, engine.play(request()))
+        assertEquals(PlayResult.Rejected(RejectReason.BUDGET_FULL), engine.play(request()))
     }
 
     @Test

@@ -158,7 +158,7 @@ final class GoldenTests: XCTestCase {
             switch d["kind"] as! String {
             case "admit": expected = .admit(gridLevel: num(d["grid"]).intValue, evict: arr(d["evict"]).map { num($0).int64Value })
             case "queue": expected = .queue
-            default: expected = .reject
+            default: expected = .reject(RejectReason(rawValue: d["reason"] as! String)!)
             }
             XCTAssertEqual(expected, Admission.decide(strategy, budget: num(o["budget"]).intValue, running: running, ladderCosts: ladder),
                            "\(strategy) \(ladder)")

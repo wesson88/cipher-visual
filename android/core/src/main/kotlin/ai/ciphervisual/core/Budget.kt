@@ -33,11 +33,20 @@ public enum class OverflowStrategy(public val wire: String) {
     DROP_OLDEST("dropOldest"),
 }
 
+/** 拒绝原因（契约，wire 名见 golden admission.json）。 */
+public enum class RejectReason(public val wire: String) {
+    /** `DROP_NEWEST` 下当前预算已占满 */
+    BUDGET_FULL("budgetFull"),
+
+    /** 单个请求在最低可用档即超总预算：排队会永久饿死队列、挤占也放不下，直接拒绝 */
+    OVER_TOTAL_BUDGET("overTotalBudget"),
+}
+
 public sealed interface AdmissionDecision {
     /** 以 grid 阶梯第 [gridLevel] 档启动；先 teardown [evict] 中的 handle */
     public data class Admit(val gridLevel: Int, val evict: List<Long>) : AdmissionDecision
     public data object Queue : AdmissionDecision
-    public data object Reject : AdmissionDecision
+    public data class Reject(val reason: RejectReason) : AdmissionDecision
 }
 
 /** 一个正在耗预算的 handle（按启动先后排列）。 */
@@ -59,6 +68,8 @@ public object Admission {
     ): AdmissionDecision {
         val usage = running.sumOf { it.cost }
         fun fits(c: Int, u: Int = usage) = u + c <= budget
+        val bounded = strategy == OverflowStrategy.QUEUE || strategy == OverflowStrategy.DROP_NEWEST || strategy == OverflowStrategy.DROP_OLDEST
+        if (bounded && ladderCosts[0] > budget) return AdmissionDecision.Reject(RejectReason.OVER_TOTAL_BUDGET)
         return when (strategy) {
             OverflowStrategy.DEGRADE -> {
                 val level = ladderCosts.indexOfFirst { fits(it) }
@@ -68,7 +79,7 @@ public object Admission {
             OverflowStrategy.QUEUE ->
                 if (fits(ladderCosts[0])) AdmissionDecision.Admit(0, emptyList()) else AdmissionDecision.Queue
             OverflowStrategy.DROP_NEWEST ->
-                if (fits(ladderCosts[0])) AdmissionDecision.Admit(0, emptyList()) else AdmissionDecision.Reject
+                if (fits(ladderCosts[0])) AdmissionDecision.Admit(0, emptyList()) else AdmissionDecision.Reject(RejectReason.BUDGET_FULL)
             OverflowStrategy.DROP_OLDEST -> {
                 val evict = ArrayList<Long>()
                 var u = usage

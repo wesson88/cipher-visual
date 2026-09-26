@@ -12,18 +12,23 @@ import android.view.View
 import kotlin.math.max
 
 /**
- * 单个句柄的渲染面（Canvas，MVP）。尺寸 = max(source, target) 内容尺寸。
+ * 单个渲染位（Canvas，MVP）。尺寸 = max(source, target) 内容尺寸。
  *
+ * 同一时刻只渲染一个句柄。新句柄挂上来时，若前一次正在 reverse 收回，继续画它直到终态，再切到新句柄
+ * （与引擎的取消交接一致：前一次终态回调之后新句柄才启动）。
  * 粒子迸发会越出内容边界：宿主若不想被裁剪，需让父容器 `clipChildren = false`（布局归 App）。
- * 句柄进入终态后自动清空画面并释放库持有的位图。
  */
 public class CipherVisualView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
-    private var handle: VisualHandle? = null
-    private var source: ResolvedContent? = null
-    private var target: ResolvedContent? = null
+    private class Bound(val handle: VisualHandle, val source: ResolvedContent, val target: ResolvedContent)
+
+    /** 正在渲染的 */
+    private var current: Bound? = null
+
+    /** 等交接的（前一次收回完成后切上来） */
+    private var pending: Bound? = null
     private var points = FloatArray(0)
     private val particlePaint = Paint().apply {
         isAntiAlias = false
@@ -31,67 +36,79 @@ public class CipherVisualView @JvmOverloads constructor(
     }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
-    /** 当前挂载的句柄（可能已终态）。 */
-    public val attachedHandle: VisualHandle? get() = handle
+    /** 最新挂上的句柄（可能仍在等交接，也可能已终态）。 */
+    public val attachedHandle: VisualHandle? get() = (pending ?: current)?.handle
 
     internal fun attach(handle: VisualHandle, source: ResolvedContent, target: ResolvedContent) {
-        detach()
-        this.handle = handle
-        this.source = source
-        this.target = target
-        handle.frameObserver = { onHandleFrame() }
+        val b = Bound(handle, source, target)
+        val cur = current
+        if (cur == null || cur.handle.state.isTerminal || cur.handle.state == HandleState.IDLE) {
+            cur?.let(::release)
+            current = b
+        } else {
+            // 前一次还在收回（reverse）：继续画它，新句柄排在后面
+            pending?.let(::release)
+            pending = b
+        }
+        handle.frameObserver = { onHandleFrame(handle) }
         requestLayout()
         invalidate()
     }
 
     /** 解除挂载并释放库持有的位图。不改变句柄状态（收回请调 `handle.cancel`）。 */
     public fun detach() {
-        handle?.frameObserver = null
-        handle = null
-        source?.recycleIfOwned()
-        target?.recycleIfOwned()
-        source = null
-        target = null
+        current?.let(::release)
+        pending?.let(::release)
+        current = null
+        pending = null
         points = FloatArray(0)
         invalidate()
     }
 
-    private fun onHandleFrame() {
-        val h = handle ?: return
+    private fun release(b: Bound) {
+        b.handle.frameObserver = null
+        b.source.recycleIfOwned()
+        b.target.recycleIfOwned()
+    }
+
+    private fun onHandleFrame(h: VisualHandle) {
         if (h.state.isTerminal) {
-            detach()
-            return
+            val cur = current
+            val pen = pending
+            when {
+                cur?.handle === h -> {
+                    release(cur)
+                    current = pen
+                    pending = null
+                    if (pen != null) requestLayout()
+                }
+                pen?.handle === h -> {
+                    release(pen)
+                    pending = null
+                }
+            }
         }
         invalidate()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val w = max(source?.width ?: 0, target?.width ?: 0) + paddingLeft + paddingRight
-        val h = max(source?.height ?: 0, target?.height ?: 0) + paddingTop + paddingBottom
+        val b = pending ?: current
+        val w = max(b?.source?.width ?: 0, b?.target?.width ?: 0) + paddingLeft + paddingRight
+        val h = max(b?.source?.height ?: 0, b?.target?.height ?: 0) + paddingTop + paddingBottom
         setMeasuredDimension(resolveSize(w, widthMeasureSpec), resolveSize(h, heightMeasureSpec))
     }
 
-    override fun onDetachedFromWindow() {
-        // 视图离屏只释放渲染资源；句柄生命周期归 App（库不替 App 决定收回）
-        handle?.frameObserver = null
-        super.onDetachedFromWindow()
-    }
-
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        handle?.frameObserver = { onHandleFrame() }
-    }
-
     override fun onDraw(canvas: Canvas) {
-        val h = handle ?: return
+        val b = current ?: return
+        val h = b.handle
         if (h.state == HandleState.IDLE) return
         try {
             canvas.save()
             canvas.translate(paddingLeft.toFloat(), paddingTop.toFloat())
             when (val ins = h.currentRender()) {
                 RenderInstruction.None -> Unit
-                RenderInstruction.StaticTarget -> target?.let { canvas.drawBitmap(it.bitmap, 0f, 0f, bitmapPaint) }
-                is RenderInstruction.Crossfade -> drawCrossfade(canvas, ins.targetAlpha)
+                RenderInstruction.StaticTarget -> canvas.drawBitmap(b.target.bitmap, 0f, 0f, bitmapPaint)
+                is RenderInstruction.Crossfade -> drawCrossfade(canvas, b, ins.targetAlpha)
                 is RenderInstruction.Particles -> drawParticles(canvas, ins.frame)
             }
             canvas.restore()
@@ -101,16 +118,12 @@ public class CipherVisualView @JvmOverloads constructor(
         }
     }
 
-    private fun drawCrossfade(canvas: Canvas, targetAlpha: Float) {
+    private fun drawCrossfade(canvas: Canvas, b: Bound, targetAlpha: Float) {
         val a = (targetAlpha * 255).toInt().coerceIn(0, 255)
-        source?.let {
-            bitmapPaint.alpha = 255 - a
-            canvas.drawBitmap(it.bitmap, 0f, 0f, bitmapPaint)
-        }
-        target?.let {
-            bitmapPaint.alpha = a
-            canvas.drawBitmap(it.bitmap, 0f, 0f, bitmapPaint)
-        }
+        bitmapPaint.alpha = 255 - a
+        canvas.drawBitmap(b.source.bitmap, 0f, 0f, bitmapPaint)
+        bitmapPaint.alpha = a
+        canvas.drawBitmap(b.target.bitmap, 0f, 0f, bitmapPaint)
         bitmapPaint.alpha = 255
     }
 

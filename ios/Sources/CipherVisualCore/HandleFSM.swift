@@ -55,10 +55,18 @@ public enum OverflowStrategy: String, CaseIterable {
     case degrade, dropFrame, queue, dropNewest, dropOldest
 }
 
+/// 拒绝原因（契约，wire 名见 golden admission.json）。
+public enum RejectReason: String {
+    /// dropNewest 下当前预算已占满
+    case budgetFull
+    /// 单个请求在最低可用档即超总预算：排队会永久饿死队列、挤占也放不下，直接拒绝
+    case overTotalBudget
+}
+
 public enum AdmissionDecision: Equatable {
     case admit(gridLevel: Int, evict: [Int64])
     case queue
-    case reject
+    case reject(RejectReason)
 }
 
 public struct RunningCost {
@@ -78,6 +86,9 @@ public enum Admission {
     public static func decide(_ strategy: OverflowStrategy, budget: Int, running: [RunningCost], ladderCosts: [Int]) -> AdmissionDecision {
         let usage = running.reduce(0) { $0 + $1.cost }
         func fits(_ c: Int, _ u: Int) -> Bool { u + c <= budget }
+        if [.queue, .dropNewest, .dropOldest].contains(strategy) && ladderCosts[0] > budget {
+            return .reject(.overTotalBudget)
+        }
         switch strategy {
         case .degrade:
             let level = ladderCosts.firstIndex { fits($0, usage) } ?? (ladderCosts.count - 1)
@@ -87,7 +98,7 @@ public enum Admission {
         case .queue:
             return fits(ladderCosts[0], usage) ? .admit(gridLevel: 0, evict: []) : .queue
         case .dropNewest:
-            return fits(ladderCosts[0], usage) ? .admit(gridLevel: 0, evict: []) : .reject
+            return fits(ladderCosts[0], usage) ? .admit(gridLevel: 0, evict: []) : .reject(.budgetFull)
         case .dropOldest:
             var evict: [Int64] = []
             var u = usage

@@ -92,6 +92,10 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 | 渲染指令 | 减少动效 → `Crossfade(m(t))`；active 且 t ≥ hold.start 且 static → `StaticTarget`；否则 `Particles` |
 | 预算口径 | 句柄每帧成本 = 粒子数（变换期 / jitter hold / reverse 中）；static hold 与减少动效 = 0 |
 | 打满裁决 | 见 golden `admission.json`；grid 阶梯 = grid, 2·grid, 4·grid |
+| 单请求超总预算 | `queue` / `dropNewest` / `dropOldest` 下，请求在最低可用档即超总预算 → 直接拒绝 `overTotalBudget`（排队会永久饿死队列）；`dropNewest` 当前占满 → `budgetFull`。拒绝原因随 `PlayResult.Rejected` / `rejectReason` 交给接入方 |
+| 取消交接 | **最新来的主动取消前一次，前一次终态回调发出后才启动最新的**。两条路径：① 同渲染位（`slot`，平台层 = View）上新请求取消该位所有未终态前任；② `dropOldest` 挤占。取消方式取新请求的 `preemptMode`（默认 teardown，可选 reverse）。未启动的前任直接撤回（先于在跑的，避免级联放行造成闪现）；teardown 同步终态后立即裁决新请求；reverse 则新请求以 `Queued` 停在 idle，等前任倒放完、终态回调后再裁决 |
+| 交接后裁决 | 交接完成后重新裁决；被拒则新句柄 idle → completed（`endReason = REJECTED`，`rejectReason` 给原因）。挤占引发级联放行后必须重新裁决，不按旧计划启动 |
+| 预算不变式 | `queue` / `dropNewest` / `dropOldest` 下，任何句柄被放行（→ active）的那一刻占用 ≤ 预算。例外：App 自己对多条 static hold 发起 reverse 会重新计费且不经裁决，可能短时超预算（待拍板） |
 | 失败 | 平台渲染异常 → `reportError` → failed（可见失败，不静默降级） |
 
 ## 7. 句柄状态机
@@ -124,3 +128,5 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 | 4 | `queue` 策略下排队中撤回 | 新增事件 `withdraw`：idle → completed，`endReason = WITHDRAWN`（contract-additive，5 态 5 事件） | 写回句柄状态机 |
 | 5 | `impact` 模型 | **particleField**；画面震动部分由调用方叠加 `shake` 编排（尺子 5） | 写回原语集 |
 | 6 | 预算默认值 `LINEAR_X_FULL = 8000 / ERM_Z = 3000` | 仍是**拍值，待真机标定**（边界 §6.4） | — |
+| 7 | 新请求与前一次的关系 | 最新的取消前一次，前一次终态回调后再启动；同渲染位与 `dropOldest` 都走交接；默认 teardown、可配 reverse（2026-09-26） | 写回边界 §五/§六 |
+| 8 | 单请求超总预算 | 直接拒绝并给出原因（`overTotalBudget`），不排队（2026-09-26） | 写回边界 §六 |

@@ -184,7 +184,7 @@ class GoldenTest {
             val expected = when (d["kind"]!!.s) {
                 "admit" -> AdmissionDecision.Admit(d["grid"]!!.i, d["evict"]!!.arr.map { it.l })
                 "queue" -> AdmissionDecision.Queue
-                "reject" -> AdmissionDecision.Reject
+                "reject" -> AdmissionDecision.Reject(RejectReason.entries.first { it.wire == d["reason"]!!.s })
                 else -> error("unknown kind")
             }
             assertEquals(expected, Admission.decide(strategy, o["budget"]!!.i, running, ladder), "$strategy ${o["budget"]} $ladder")

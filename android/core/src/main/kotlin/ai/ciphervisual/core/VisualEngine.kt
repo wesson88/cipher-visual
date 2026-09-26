@@ -18,6 +18,13 @@ public class PlayRequest(
     /** 系统「减少动效」开启时由平台层置 true：降级为淡入淡出，锚点时序不变 */
     public val reducedMotion: Boolean = false,
     public val prepared: PreparedSource? = null,
+    /**
+     * 渲染位（平台层传入 View）。同一渲染位上「最新的取消前一次」：新请求先取消前一次，
+     * 前一次终态回调发出后新请求才启动（取消交接）。null = 不参与渲染位互斥。
+     */
+    public val slot: Any? = null,
+    /** 取消前一次（同渲染位前任 / dropOldest 挤掉的）用哪种收回：默认 TEARDOWN 瞬时，可选 REVERSE（等倒放完再交接） */
+    public val preemptMode: CancelMode = CancelMode.TEARDOWN,
 )
 
 /** 回调在帧时钟线程（Android 主线程）上发出；回调里可直接调 `handle.cancel(...)`。 */
@@ -31,15 +38,34 @@ public interface VisualListener {
 public sealed interface PlayResult {
     public data class Started(val handle: VisualHandle) : PlayResult
 
-    /** `QUEUE` 策略下预算不足：handle 停在 idle，预算释放后自动启动；`cancel()` 撤出队列（→ completed / WITHDRAWN）。 */
+    /**
+     * 未立即启动，handle 停在 idle：`QUEUE` 策略排队中，或在等前一次取消完成（取消交接）。
+     * 之后自动启动；也可能以 WITHDRAWN（App cancel）/ PREEMPTED（被更新的请求取代）/ REJECTED（交接后裁决拒绝）进入终态。
+     */
     public data class Queued(val handle: VisualHandle) : PlayResult
 
-    /** `DROP_NEWEST` 策略下预算不足 */
-    public data object Rejected : PlayResult
+    /** 裁决拒绝，未产生句柄。 */
+    public data class Rejected(val reason: RejectReason) : PlayResult
 }
 
 /** 终态原因。 */
-public enum class EndReason { TEARDOWN, REVERSED, EVICTED, ERROR, WITHDRAWN }
+public enum class EndReason {
+    TEARDOWN,
+    REVERSED,
+
+    /** 被 `DROP_OLDEST` 挤掉 */
+    EVICTED,
+    ERROR,
+
+    /** 未启动即被 App 撤回 */
+    WITHDRAWN,
+
+    /** 同渲染位上被更新的请求取代 */
+    PREEMPTED,
+
+    /** 等待交接后重新裁决被拒（原因见 `VisualHandle.rejectReason`） */
+    REJECTED,
+}
 
 /** 某个 source 在 grid 阶梯各档上的预采样。 */
 public class PreparedSource internal constructor(
@@ -73,6 +99,9 @@ public class VisualEngine(
 ) {
     private val running = ArrayList<VisualHandle>()
     private val queue = ArrayDeque<VisualHandle>()
+    /** 渲染位 → 该位上所有未终态句柄（按发起先后）。不能只记「最新一个」：最新的被撤回时，更早的可能仍在倒放。 */
+    private val slotMembers = HashMap<Any, MutableList<VisualHandle>>()
+    private var releasing = false
     private var nextId = 1L
     private var subscribed = false
     private val frameCallback = FrameCallback { onFrame(it) }
@@ -89,32 +118,45 @@ public class VisualEngine(
     public fun play(request: PlayRequest): PlayResult {
         IrValidator.requireValid(request.ir)
         val handle = VisualHandle(nextId++, this, request)
-        return when (val d = decide(handle)) {
-            is AdmissionDecision.Admit -> {
-                start(handle, d)
-                PlayResult.Started(handle)
+        request.slot?.let { slot ->
+            // 同位所有未终态的前任（在跑的 / 在倒放的 / 还没启动的）都由新请求取消，未即时终态的等它们交接。
+            // 先撤回还没启动的：否则取消在跑的会级联放行它们，出现「刚 active 就被取消」的闪现
+            val prevs = slotMembers[slot].orEmpty().sortedBy { it.state != HandleState.IDLE }
+            for (prev in prevs) {
+                preempt(prev, request.preemptMode, EndReason.PREEMPTED)
+                if (!prev.state.isTerminal) handle.awaitHandoff(prev)
             }
-            AdmissionDecision.Queue -> {
-                handle.queued = true
-                queue.addLast(handle)
-                PlayResult.Queued(handle)
-            }
-            AdmissionDecision.Reject -> PlayResult.Rejected
+            // 前任终态时会把空列表整个移出 map，这里必须重新取
+            slotMembers.getOrPut(slot) { ArrayList() } += handle
         }
+        val result = if (handle.awaiting.isNotEmpty()) {
+            PlayResult.Queued(handle)
+        } else {
+            drainQueue()
+            admitOrWait(handle, announced = false)
+        }
+        updateSubscription()
+        return result
     }
 
-    /** 销毁：teardown 全部句柄、清空队列、退订帧时钟。生命周期清理，不是收回策略。 */
+    /** 销毁：撤回全部未启动句柄、teardown 全部运行句柄、退订帧时钟。生命周期清理，不是收回策略。 */
     public fun release() {
-        for (h in queue.toList()) withdraw(h)
+        releasing = true
+        for (h in (queue.toList() + running.flatMap { it.waiters }).distinct()) withdraw(h, EndReason.WITHDRAWN)
         for (h in running.toList()) teardown(h, EndReason.TEARDOWN)
+        slotMembers.clear()
+        releasing = false
         updateSubscription()
     }
 
     // ---------------------------------------------------------------- 句柄控制（VisualHandle 转调）
 
     internal fun cancel(handle: VisualHandle, mode: CancelMode): Boolean {
-        if (handle.queued) {
-            withdraw(handle)
+        if (handle.state == HandleState.IDLE) {
+            // 未启动（排队 / 等交接）：mode 无意义，直接撤回
+            withdraw(handle, EndReason.WITHDRAWN)
+            drainQueue()
+            updateSubscription()
             return true
         }
         return when (mode) {
@@ -126,11 +168,8 @@ public class VisualEngine(
                 true
             }
             CancelMode.REVERSE -> {
-                val next = HandleFsm.transition(handle.state, HandleEvent.CANCEL_REVERSE) ?: return false
-                // 从 hold 收回时先跳回 target 队形（morphEnd），再沿时间轴倒放到 0
-                handle.reverseOriginMs = minOf(handle.timeMs, handle.knobs.morphEnd)
-                handle.reverseStartNanos = null
-                handle.setState(next)
+                if (HandleFsm.transition(handle.state, HandleEvent.CANCEL_REVERSE) == null) return false
+                startReverse(handle, EndReason.REVERSED)
                 updateSubscription()
                 true
             }
@@ -164,20 +203,79 @@ public class VisualEngine(
         return Admission.decide(config.overflowStrategy, config.particleBudget, running, ladder)
     }
 
-    private fun start(handle: VisualHandle, decision: AdmissionDecision.Admit) {
-        for (id in decision.evict) running.firstOrNull { it.id == id }?.let { teardown(it, EndReason.EVICTED) }
+    /**
+     * 裁决并启动；需要挤占且被挤者走 reverse 时进入等待（交接完成后由 [finish] 重新裁决）。
+     * @param announced 句柄是否已作为 Queued 交给调用方（决定拒绝时走终态还是直接返回 Rejected）
+     */
+    private fun admitOrWait(handle: VisualHandle, announced: Boolean): PlayResult {
+        return when (val d = decide(handle)) {
+            is AdmissionDecision.Admit -> {
+                for (id in d.evict) {
+                    val victim = running.firstOrNull { it.id == id } ?: continue
+                    preempt(victim, handle.request.preemptMode, EndReason.EVICTED)
+                    if (!victim.state.isTerminal) handle.awaitHandoff(victim)
+                }
+                when {
+                    handle.awaiting.isNotEmpty() -> PlayResult.Queued(handle)
+                    // 挤占会触发被挤者的 finish → 级联放行等它交接的句柄，可能已吃掉腾出的预算：重新裁决而不是按旧计划启动
+                    d.evict.isNotEmpty() -> admitOrWait(handle, announced)
+                    else -> {
+                        start(handle, d.gridLevel)
+                        PlayResult.Started(handle)
+                    }
+                }
+            }
+            AdmissionDecision.Queue -> {
+                handle.queued = true
+                queue.addLast(handle)
+                PlayResult.Queued(handle)
+            }
+            is AdmissionDecision.Reject -> {
+                handle.rejectReason = d.reason
+                if (announced) {
+                    withdraw(handle, EndReason.REJECTED)
+                } else {
+                    // 从未交给调用方：只清理渲染位登记与预建粒子场
+                    removeFromSlot(handle)
+                    handle.releaseResources()
+                }
+                PlayResult.Rejected(d.reason)
+            }
+        }
+    }
+
+    private fun start(handle: VisualHandle, gridLevel: Int) {
         handle.queued = false
-        if (!handle.request.reducedMotion) handle.adopt(decision.gridLevel)
+        if (!handle.request.reducedMotion) handle.adopt(gridLevel)
         running += handle
         handle.setState(HandleFsm.transition(handle.state, HandleEvent.PLAY)!!)
         updateSubscription()
     }
 
-    /** 排队中撤回：idle --withdraw--> completed。走统一收尾——释放排队裁决时预建的粒子场并通知渲染面。 */
-    private fun withdraw(handle: VisualHandle) {
+    /** 取消前一次：未启动的直接撤回；TEARDOWN 瞬时终态；REVERSE 进入倒放（已在倒放的保持）。 */
+    private fun preempt(h: VisualHandle, mode: CancelMode, reason: EndReason) {
+        when {
+            h.state == HandleState.IDLE -> withdraw(h, reason)
+            mode == CancelMode.TEARDOWN -> teardown(h, reason)
+            h.state == HandleState.ACTIVE -> startReverse(h, reason)
+            else -> Unit
+        }
+    }
+
+    private fun startReverse(h: VisualHandle, reason: EndReason) {
+        // 从 hold 收回时先跳回 target 队形（morphEnd），再沿时间轴倒放到 0
+        h.reverseOriginMs = minOf(h.timeMs, h.knobs.morphEnd)
+        h.reverseStartNanos = null
+        h.reverseEndReason = reason
+        h.setState(HandleFsm.transition(h.state, HandleEvent.CANCEL_REVERSE)!!)
+    }
+
+    /** 未启动即退出：idle --withdraw--> completed。走统一收尾——释放预建的粒子场并通知渲染面。 */
+    private fun withdraw(handle: VisualHandle, reason: EndReason) {
         queue.remove(handle)
         handle.queued = false
-        handle.endReason = EndReason.WITHDRAWN
+        handle.clearAwaiting()
+        handle.endReason = reason
         finish(handle, HandleFsm.transition(handle.state, HandleEvent.WITHDRAW)!!)
     }
 
@@ -186,20 +284,42 @@ public class VisualEngine(
         finish(handle, HandleState.COMPLETED)
     }
 
+    /** 统一收尾。终态回调发出**之后**才放行等它交接的句柄——「前一次拿到回调后再发起最新的」。 */
     private fun finish(handle: VisualHandle, terminal: HandleState) {
         running.remove(handle)
         handle.releaseResources()
         handle.setState(terminal)
         handle.notifyFrame()
+        removeFromSlot(handle)
+        val waiters = handle.waiters.toList()
+        handle.waiters.clear()
+        for (w in waiters) {
+            w.awaiting.remove(handle)
+            if (w.awaiting.isEmpty() && w.state == HandleState.IDLE && !releasing) admitOrWait(w, announced = true)
+        }
+    }
+
+    private fun removeFromSlot(handle: VisualHandle) {
+        val slot = handle.request.slot ?: return
+        val members = slotMembers[slot] ?: return
+        members.remove(handle)
+        if (members.isEmpty()) slotMembers.remove(slot)
     }
 
     private fun drainQueue() {
         while (queue.isNotEmpty()) {
             val head = queue.first()
-            val d = decide(head)
-            if (d !is AdmissionDecision.Admit) return
-            queue.removeFirst()
-            start(head, d)
+            when (val d = decide(head)) {
+                is AdmissionDecision.Admit -> {
+                    queue.removeFirst()
+                    start(head, d.gridLevel)
+                }
+                is AdmissionDecision.Reject -> {
+                    head.rejectReason = d.reason
+                    withdraw(head, EndReason.REJECTED)
+                }
+                AdmissionDecision.Queue -> return
+            }
         }
     }
 
@@ -248,7 +368,7 @@ public class VisualEngine(
         h.render()
         h.notifyFrame()
         if (t <= 0.0) {
-            h.endReason = EndReason.REVERSED
+            h.endReason = h.reverseEndReason
             finish(h, HandleFsm.transition(h.state, HandleEvent.REVERSE_DONE)!!)
         }
     }
@@ -298,6 +418,13 @@ public class VisualHandle internal constructor(
 
     public val isQueued: Boolean get() = queued
 
+    /** 在等前一次（同渲染位前任 / 被挤者）收回完成。 */
+    public val isAwaitingHandoff: Boolean get() = awaiting.isNotEmpty()
+
+    /** 以 REJECTED 终结或 play 返回 Rejected 时的原因。 */
+    public var rejectReason: RejectReason? = null
+        internal set
+
     public val reducedMotion: Boolean get() = request.reducedMotion
 
     public fun cancel(mode: CancelMode): Boolean = engine.cancel(this, mode)
@@ -321,6 +448,20 @@ public class VisualHandle internal constructor(
     internal var startNanos: Long? = null
     internal var reverseStartNanos: Long? = null
     internal var reverseOriginMs = 0.0
+    internal var reverseEndReason = EndReason.REVERSED
+
+    /** 本句柄在等哪些句柄收回完成 / 哪些句柄在等本句柄 */
+    internal val awaiting = LinkedHashSet<VisualHandle>()
+    internal val waiters = ArrayList<VisualHandle>()
+
+    internal fun awaitHandoff(prev: VisualHandle) {
+        if (awaiting.add(prev)) prev.waiters += this
+    }
+
+    internal fun clearAwaiting() {
+        for (a in awaiting) a.waiters.remove(this)
+        awaiting.clear()
+    }
 
     private val evaluator = TrajectoryEvaluator(request.ir)
     private val fieldCache = arrayOfNulls<ParticleField>(Admission.LADDER_STEPS)

@@ -1,5 +1,6 @@
 package ai.ciphervisual
 
+import ai.ciphervisual.core.CancelMode
 import ai.ciphervisual.core.Effect
 import ai.ciphervisual.core.EngineConfig
 import ai.ciphervisual.core.FrameClock
@@ -25,6 +26,11 @@ public data class PlayOptions(
     val gridPx: Int = IrTemplates.DEFAULT_GRID_PX,
     /** 尊重系统「减少动效」：开启时降级为淡入淡出，锚点时序不变 */
     val respectReducedMotion: Boolean = true,
+    /**
+     * 同一 [CipherVisualView] 上「最新的取消前一次」时，前一次用哪种收回：默认 TEARDOWN（瞬时，新动效立即接上）；
+     * REVERSE 则前一次倒放完、终态回调发出后新动效才启动。`DROP_OLDEST` 挤占同样按此收回。
+     */
+    val preemptMode: CancelMode = CancelMode.TEARDOWN,
 )
 
 /**
@@ -113,15 +119,20 @@ public class CipherVisual(
         val tgt = ContentResolver.resolve(target)
         val reduced = options.respectReducedMotion && isReducedMotionEnabled()
         val result = try {
-            engine.play(PlayRequest(ir, source.pixels, tgt.pixels, listener, reduced, prepared))
+            // 渲染位 = view：同一 view 上新请求先取消前一次（库保证一个 view 同时只渲染一个句柄）
+            engine.play(PlayRequest(ir, source.pixels, tgt.pixels, listener, reduced, prepared, slot = view, preemptMode = options.preemptMode))
         } catch (e: IllegalArgumentException) {
+            source.recycleIfOwned()
             tgt.recycleIfOwned()
             throw e
         }
         when (result) {
             is PlayResult.Started -> view.attach(result.handle, source, tgt)
             is PlayResult.Queued -> view.attach(result.handle, source, tgt)
-            PlayResult.Rejected -> tgt.recycleIfOwned()
+            is PlayResult.Rejected -> {
+                source.recycleIfOwned()
+                tgt.recycleIfOwned()
+            }
         }
         return result
     }

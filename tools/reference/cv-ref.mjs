@@ -276,9 +276,13 @@ export function transition(state, event) {
 
 // ladderCosts[i] = 该 handle 在粒子网格第 i 档（grid, grid*2, grid*4）下的粒子数
 // running = [{ id, cost }] 按启动先后排列（最早在前）
+// 拒绝原因：budgetFull = dropNewest 下当前占满；overTotalBudget = 单请求（最低可用档）即超总预算，排队 / 挤占都无意义
 export function admit(strategy, budget, running, ladderCosts) {
   const usage = running.reduce((s, r) => s + r.cost, 0);
   const fits = (c, u = usage) => u + c <= budget;
+  if ((strategy === "queue" || strategy === "dropNewest" || strategy === "dropOldest") && ladderCosts[0] > budget) {
+    return { kind: "reject", reason: "overTotalBudget" };
+  }
   switch (strategy) {
     case "degrade": {
       for (let i = 0; i < ladderCosts.length; i++) if (fits(ladderCosts[i])) return { kind: "admit", grid: i, evict: [] };
@@ -289,7 +293,7 @@ export function admit(strategy, budget, running, ladderCosts) {
     case "queue":
       return fits(ladderCosts[0]) ? { kind: "admit", grid: 0, evict: [] } : { kind: "queue" };
     case "dropNewest":
-      return fits(ladderCosts[0]) ? { kind: "admit", grid: 0, evict: [] } : { kind: "reject" };
+      return fits(ladderCosts[0]) ? { kind: "admit", grid: 0, evict: [] } : { kind: "reject", reason: "budgetFull" };
     case "dropOldest": {
       const evict = [];
       let u = usage;

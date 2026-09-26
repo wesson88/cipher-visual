@@ -43,24 +43,32 @@ public struct PlayRequest {
     /// 系统「减少动效」开启：降级为淡入淡出，锚点时序不变
     public let reducedMotion: Bool
     public let prepared: PreparedSource?
+    /// 渲染位（平台层传入 view）。同一渲染位上「最新的取消前一次」：前一次终态回调发出后新请求才启动。nil = 不参与互斥
+    public let slot: AnyHashable?
+    /// 取消前一次（同渲染位前任 / dropOldest 挤掉的）用哪种收回：默认 teardown 瞬时，可选 reverse
+    public let preemptMode: CancelMode
 
     public init(ir: TimelineIR, source: PixelSource, target: PixelSource, listener: VisualListener? = nil,
-                reducedMotion: Bool = false, prepared: PreparedSource? = nil) {
+                reducedMotion: Bool = false, prepared: PreparedSource? = nil,
+                slot: AnyHashable? = nil, preemptMode: CancelMode = .teardown) {
         self.ir = ir
         self.source = source
         self.target = target
         self.listener = listener
         self.reducedMotion = reducedMotion
         self.prepared = prepared
+        self.slot = slot
+        self.preemptMode = preemptMode
     }
 }
 
 public enum PlayResult {
     case started(VisualHandle)
-    /// `queue` 策略下预算不足：handle 停在 idle，预算释放后自动启动；`cancel()` 撤出队列（→ completed / withdrawn）
+    /// 未立即启动，handle 停在 idle：`queue` 策略排队中，或在等前一次取消完成（取消交接）。
+    /// 之后自动启动；也可能以 withdrawn / preempted / rejected 进入终态
     case queued(VisualHandle)
-    /// `dropNewest` 策略下预算不足
-    case rejected
+    /// 裁决拒绝，未产生句柄
+    case rejected(RejectReason)
 
     public var handle: VisualHandle? {
         switch self {
@@ -71,7 +79,16 @@ public enum PlayResult {
 }
 
 public enum EndReason {
-    case teardown, reversed, evicted, error, withdrawn
+    case teardown, reversed
+    /// 被 dropOldest 挤掉
+    case evicted
+    case error
+    /// 未启动即被 App 撤回
+    case withdrawn
+    /// 同渲染位上被更新的请求取代
+    case preempted
+    /// 等待交接后重新裁决被拒（原因见 `VisualHandle.rejectReason`）
+    case rejected
 }
 
 public enum RenderInstruction: Equatable {
@@ -90,12 +107,16 @@ public enum RenderInstruction: Equatable {
     }
 }
 
-/// 动效引擎：时间轴推进 + 锚点分发 + 粒子预算。单线程约束（主线程）。库不自动收回。
+/// 动效引擎：时间轴推进 + 锚点分发 + 粒子预算 + 取消交接。单线程约束（主线程）。库不自动收回。
+/// 结构与 Android `VisualEngine.kt` 一一对应，改动须双端同步。
 public final class VisualEngine {
     public let config: EngineConfig
     private let clock: FrameClock
     private var running: [VisualHandle] = []
     private var queue: [VisualHandle] = []
+    /// 渲染位 → 该位上所有未终态句柄。不能只记「最新一个」：最新的被撤回时，更早的可能仍在倒放
+    private var slotMembers: [AnyHashable: [VisualHandle]] = [:]
+    private var releasing = false
     private var nextId: Int64 = 1
     private var subscribed = false
     private lazy var frameCallback = FrameCallback { [weak self] nanos in self?.onFrame(nanos) }
@@ -118,23 +139,36 @@ public final class VisualEngine {
         try IRValidator.requireValid(request.ir)
         let handle = VisualHandle(id: nextId, engine: self, request: request)
         nextId += 1
-        switch decide(handle) {
-        case let .admit(level, evict):
-            start(handle, level: level, evict: evict)
-            return .started(handle)
-        case .queue:
-            handle.queued = true
-            queue.append(handle)
-            return .queued(handle)
-        case .reject:
-            return .rejected
+        if let slot = request.slot {
+            // 同位所有未终态前任都由新请求取消，未即时终态的等它们交接；先撤回还没启动的，避免级联放行造成闪现
+            let prevs = (slotMembers[slot] ?? []).sorted { a, b in a.state == .idle && b.state != .idle }
+            for prev in prevs {
+                preempt(prev, request.preemptMode, .preempted)
+                if !prev.state.isTerminal { handle.awaitHandoff(prev) }
+            }
+            // 前任终态时会把空列表整个移出字典，这里必须重新取
+            slotMembers[slot, default: []].append(handle)
         }
+        let result: PlayResult
+        if !handle.awaiting.isEmpty {
+            result = .queued(handle)
+        } else {
+            drainQueue()
+            result = admitOrWait(handle, announced: false)
+        }
+        updateSubscription()
+        return result
     }
 
-    /// 销毁：teardown 全部句柄、清空队列、退订帧时钟。
+    /// 销毁：撤回全部未启动句柄、teardown 全部运行句柄、退订帧时钟。
     public func release() {
-        for h in queue { withdraw(h) }
+        releasing = true
+        var pending: [VisualHandle] = queue
+        for h in running.flatMap({ $0.waiters }) where !pending.contains(where: { $0 === h }) { pending.append(h) }
+        for h in pending { withdraw(h, .withdrawn) }
         for h in running { teardown(h, .teardown) }
+        slotMembers.removeAll()
+        releasing = false
         updateSubscription()
     }
 
@@ -142,8 +176,10 @@ public final class VisualEngine {
 
     @discardableResult
     func cancel(_ handle: VisualHandle, _ mode: CancelMode) -> Bool {
-        if handle.queued {
-            withdraw(handle)
+        if handle.state == .idle {
+            withdraw(handle, .withdrawn)
+            drainQueue()
+            updateSubscription()
             return true
         }
         switch mode {
@@ -154,10 +190,8 @@ public final class VisualEngine {
             updateSubscription()
             return true
         case .reverse:
-            guard let next = HandleFSM.transition(handle.state, .cancelReverse) else { return false }
-            handle.reverseOriginMs = min(handle.timeMs, handle.knobs.morphEnd)
-            handle.reverseStartNanos = nil
-            handle.setState(next)
+            guard HandleFSM.transition(handle.state, .cancelReverse) != nil else { return false }
+            startReverse(handle, .reversed)
             updateSubscription()
             return true
         }
@@ -189,10 +223,37 @@ public final class VisualEngine {
         return Admission.decide(config.overflowStrategy, budget: config.particleBudget, running: costs, ladderCosts: ladder)
     }
 
-    private func start(_ handle: VisualHandle, level: Int, evict: [Int64]) {
-        for id in evict {
-            if let h = running.first(where: { $0.id == id }) { teardown(h, .evicted) }
+    /// 裁决并启动；挤占且被挤者走 reverse 时进入等待（交接完成后由 `finish` 重新裁决）。
+    private func admitOrWait(_ handle: VisualHandle, announced: Bool) -> PlayResult {
+        switch decide(handle) {
+        case let .admit(level, evict):
+            for id in evict {
+                guard let victim = running.first(where: { $0.id == id }) else { continue }
+                preempt(victim, handle.request.preemptMode, .evicted)
+                if !victim.state.isTerminal { handle.awaitHandoff(victim) }
+            }
+            if !handle.awaiting.isEmpty { return .queued(handle) }
+            // 挤占触发的 finish 会级联放行等交接的句柄，可能已吃掉腾出的预算：重新裁决
+            if !evict.isEmpty { return admitOrWait(handle, announced: announced) }
+            start(handle, level)
+            return .started(handle)
+        case .queue:
+            handle.queued = true
+            queue.append(handle)
+            return .queued(handle)
+        case let .reject(reason):
+            handle.rejectReason = reason
+            if announced {
+                withdraw(handle, .rejected)
+            } else {
+                removeFromSlot(handle)
+                handle.releaseResources()
+            }
+            return .rejected(reason)
         }
+    }
+
+    private func start(_ handle: VisualHandle, _ level: Int) {
         handle.queued = false
         if !handle.request.reducedMotion { handle.adopt(level) }
         running.append(handle)
@@ -200,11 +261,30 @@ public final class VisualEngine {
         updateSubscription()
     }
 
-    /// 排队中撤回：idle --withdraw--> completed。走统一收尾——释放排队裁决时预建的粒子场并通知渲染面。
-    private func withdraw(_ handle: VisualHandle) {
+    /// 取消前一次：未启动的直接撤回；teardown 瞬时终态；reverse 进入倒放（已在倒放的保持）。
+    private func preempt(_ h: VisualHandle, _ mode: CancelMode, _ reason: EndReason) {
+        if h.state == .idle {
+            withdraw(h, reason)
+        } else if mode == .teardown {
+            teardown(h, reason)
+        } else if h.state == .active {
+            startReverse(h, reason)
+        }
+    }
+
+    private func startReverse(_ h: VisualHandle, _ reason: EndReason) {
+        h.reverseOriginMs = min(h.timeMs, h.knobs.morphEnd)
+        h.reverseStartNanos = nil
+        h.reverseEndReason = reason
+        h.setState(HandleFSM.transition(h.state, .cancelReverse)!)
+    }
+
+    /// 未启动即退出：idle --withdraw--> completed，走统一收尾。
+    private func withdraw(_ handle: VisualHandle, _ reason: EndReason) {
         queue.removeAll { $0 === handle }
         handle.queued = false
-        handle.endReason = .withdrawn
+        handle.clearAwaiting()
+        handle.endReason = reason
         finish(handle, HandleFSM.transition(handle.state, .withdraw)!)
     }
 
@@ -213,18 +293,39 @@ public final class VisualEngine {
         finish(handle, .completed)
     }
 
+    /// 统一收尾。终态回调发出之后才放行等它交接的句柄——「前一次拿到回调后再发起最新的」。
     private func finish(_ handle: VisualHandle, _ terminal: HandleState) {
         running.removeAll { $0 === handle }
         handle.releaseResources()
         handle.setState(terminal)
         handle.notifyFrame()
+        removeFromSlot(handle)
+        let waiters = handle.waiters
+        handle.waiters.removeAll()
+        for w in waiters {
+            w.awaiting.removeAll { $0 === handle }
+            if w.awaiting.isEmpty && w.state == .idle && !releasing { _ = admitOrWait(w, announced: true) }
+        }
+    }
+
+    private func removeFromSlot(_ handle: VisualHandle) {
+        guard let slot = handle.request.slot, var members = slotMembers[slot] else { return }
+        members.removeAll { $0 === handle }
+        slotMembers[slot] = members.isEmpty ? nil : members
     }
 
     private func drainQueue() {
         while let head = queue.first {
-            guard case let .admit(level, evict) = decide(head) else { return }
-            queue.removeFirst()
-            start(head, level: level, evict: evict)
+            switch decide(head) {
+            case let .admit(level, _):
+                queue.removeFirst()
+                start(head, level)
+            case let .reject(reason):
+                head.rejectReason = reason
+                withdraw(head, .rejected)
+            case .queue:
+                return
+            }
         }
     }
 
@@ -271,7 +372,7 @@ public final class VisualEngine {
         h.render()
         h.notifyFrame()
         if t <= 0 {
-            h.endReason = .reversed
+            h.endReason = h.reverseEndReason
             finish(h, HandleFSM.transition(h.state, .reverseDone)!)
         }
     }
@@ -296,6 +397,8 @@ public final class VisualHandle {
     /// 当前时间轴位置（ms），reverse 期间递减
     public internal(set) var timeMs: Double = -1
     public internal(set) var endReason: EndReason?
+    /// 以 rejected 终结或 play 返回 rejected 时的原因
+    public internal(set) var rejectReason: RejectReason?
     /// 实际采样网格（降级后可能大于 IR 声明值）；减少动效时为 0
     public private(set) var gridPx = 0
     public private(set) var lastError: Error?
@@ -305,6 +408,8 @@ public final class VisualHandle {
     public var phase: String? { phaseAt(request.ir.phases, timeMs) }
     public var particleCount: Int { particleField?.count ?? 0 }
     public var isQueued: Bool { queued }
+    /// 在等前一次（同渲染位前任 / 被挤者）收回完成
+    public var isAwaitingHandoff: Bool { !awaiting.isEmpty }
     public var reducedMotion: Bool { request.reducedMotion }
 
     let request: PlayRequest
@@ -314,6 +419,10 @@ public final class VisualHandle {
     var startNanos: UInt64?
     var reverseStartNanos: UInt64?
     var reverseOriginMs = 0.0
+    var reverseEndReason: EndReason = .reversed
+    /// 本句柄在等哪些句柄收回完成 / 哪些句柄在等本句柄
+    var awaiting: [VisualHandle] = []
+    var waiters: [VisualHandle] = []
 
     private weak var engine: VisualEngine?
     private let evaluator: TrajectoryEvaluator
@@ -346,6 +455,17 @@ public final class VisualHandle {
     public func currentRender() -> RenderInstruction { instruction }
 
     // MARK: internal
+
+    func awaitHandoff(_ prev: VisualHandle) {
+        guard !awaiting.contains(where: { $0 === prev }) else { return }
+        awaiting.append(prev)
+        prev.waiters.append(self)
+    }
+
+    func clearAwaiting() {
+        for a in awaiting { a.waiters.removeAll { $0 === self } }
+        awaiting.removeAll()
+    }
 
     /// 测试钩子：是否仍持有任何粒子场（终态后必须为 false——库渲染完不留副本）。
     var holdsParticleData: Bool { particleField != nil || fieldCache.contains { $0 != nil } }
