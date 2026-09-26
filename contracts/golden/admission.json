@@ -808,6 +808,198 @@
         "grid": 0,
         "evict": []
       }
+    },
+    {
+      "strategy": "queue",
+      "budget": 8000,
+      "running": [
+        {
+          "id": 1,
+          "cost": 3000
+        },
+        {
+          "id": 2,
+          "cost": 0
+        },
+        {
+          "id": 3,
+          "cost": 2500
+        },
+        {
+          "id": 4,
+          "cost": 1000
+        }
+      ],
+      "ladder": [
+        100,
+        25,
+        6
+      ],
+      "queued": 1,
+      "decision": {
+        "kind": "queue"
+      }
+    },
+    {
+      "strategy": "queue",
+      "budget": 8000,
+      "running": [
+        {
+          "id": 1,
+          "cost": 3000
+        },
+        {
+          "id": 2,
+          "cost": 0
+        },
+        {
+          "id": 3,
+          "cost": 2500
+        },
+        {
+          "id": 4,
+          "cost": 1000
+        }
+      ],
+      "ladder": [
+        9000,
+        2250,
+        600
+      ],
+      "queued": 1,
+      "decision": {
+        "kind": "reject",
+        "reason": "overTotalBudget"
+      }
+    },
+    {
+      "strategy": "dropNewest",
+      "budget": 8000,
+      "running": [
+        {
+          "id": 1,
+          "cost": 3000
+        },
+        {
+          "id": 2,
+          "cost": 0
+        },
+        {
+          "id": 3,
+          "cost": 2500
+        },
+        {
+          "id": 4,
+          "cost": 1000
+        }
+      ],
+      "ladder": [
+        100,
+        25,
+        6
+      ],
+      "queued": 1,
+      "decision": {
+        "kind": "admit",
+        "grid": 0,
+        "evict": []
+      }
+    },
+    {
+      "strategy": "queue",
+      "budget": 8000,
+      "running": [
+        {
+          "id": 1,
+          "cost": 3000
+        },
+        {
+          "id": 2,
+          "cost": 0
+        },
+        {
+          "id": 3,
+          "cost": 2500
+        },
+        {
+          "id": 4,
+          "cost": 1000
+        }
+      ],
+      "ladder": [
+        100,
+        25,
+        6
+      ],
+      "queued": 3,
+      "decision": {
+        "kind": "queue"
+      }
+    },
+    {
+      "strategy": "queue",
+      "budget": 8000,
+      "running": [
+        {
+          "id": 1,
+          "cost": 3000
+        },
+        {
+          "id": 2,
+          "cost": 0
+        },
+        {
+          "id": 3,
+          "cost": 2500
+        },
+        {
+          "id": 4,
+          "cost": 1000
+        }
+      ],
+      "ladder": [
+        9000,
+        2250,
+        600
+      ],
+      "queued": 3,
+      "decision": {
+        "kind": "reject",
+        "reason": "overTotalBudget"
+      }
+    },
+    {
+      "strategy": "dropNewest",
+      "budget": 8000,
+      "running": [
+        {
+          "id": 1,
+          "cost": 3000
+        },
+        {
+          "id": 2,
+          "cost": 0
+        },
+        {
+          "id": 3,
+          "cost": 2500
+        },
+        {
+          "id": 4,
+          "cost": 1000
+        }
+      ],
+      "ladder": [
+        100,
+        25,
+        6
+      ],
+      "queued": 3,
+      "decision": {
+        "kind": "admit",
+        "grid": 0,
+        "evict": []
+      }
     }
   ]
 }

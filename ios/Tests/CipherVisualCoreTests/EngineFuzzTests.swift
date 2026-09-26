@@ -2,6 +2,7 @@ import XCTest
 @testable import CipherVisualCore
 
 /// 引擎不变式 fuzz，镜像 Android `EngineFuzzTest`（断言清单见那边的类注释）。随机源用 Mulberry32，失败信息带 seed 与操作轨迹。
+/// 与 Android 的差异：iOS 像素源回收后读到 0 而非抛错（`ResolvedContent.releasePixels` 口径），「detach 后启动」路径不抛异常。
 final class EngineFuzzTests: XCTestCase {
     private final class Tracked {
         let handle: VisualHandle
@@ -9,6 +10,7 @@ final class EngineFuzzTests: XCTestCase {
         let seq: Int
         var lastState: HandleState
         var notifiedAfterTerminal = false
+        var releaseCount = 0
         var violations: [String] = []
 
         init(_ handle: VisualHandle, _ slot: String?, _ seq: Int) {
@@ -19,8 +21,18 @@ final class EngineFuzzTests: XCTestCase {
         }
     }
 
+    /// 可回收像素源：回收后读到 0（iOS 口径）
+    private final class RecyclablePixels: PixelSource {
+        let width: Int
+        let height = 12
+        var recycled = false
+        init(_ w: Int) { width = w }
+        func argb(x: Int, y: Int) -> UInt32 { recycled ? 0 : 0xFF22_3344 }
+    }
+
     private final class Recorder: VisualListener {
         var byId: [Int64: Tracked] = [:]
+        var cancelOnActive: Set<Int64> = []
         var trace: [String] = []
         var onActivated: ((Tracked) -> Void)?
 
@@ -31,18 +43,25 @@ final class EngineFuzzTests: XCTestCase {
 
         func onStateChanged(_ handle: VisualHandle, state: HandleState) {
             log("  cb h\(handle.id) → \(state.rawValue) \(handle.endReason.map { "\($0)" } ?? "")")
-            guard let t = byId[handle.id] else { return }
-            if t.lastState.isTerminal { t.violations.append("终态 \(t.lastState) 之后又回调 \(state)") }
-            if !HandleEvent.allCases.contains(where: { HandleFSM.transition(t.lastState, $0) == state }) {
-                t.violations.append("非法跳转 \(t.lastState) → \(state)")
+            if let t = byId[handle.id] {
+                if t.lastState.isTerminal { t.violations.append("终态 \(t.lastState) 之后又回调 \(state)") }
+                if !HandleEvent.allCases.contains(where: { HandleFSM.transition(t.lastState, $0) == state }) {
+                    t.violations.append("非法跳转 \(t.lastState) → \(state)")
+                }
+                if state == .active { onActivated?(t) }
+                t.lastState = state
             }
-            if state == .active { onActivated?(t) }
-            t.lastState = state
+            if state == .active && cancelOnActive.contains(handle.id) {
+                log("  (回调内立即取消 h\(handle.id))")
+                handle.cancel(.teardown)
+            }
         }
     }
 
-    private func block(_ w: Int) -> PixelSource {
-        ArrayPixels(width: w, height: 12, pixels: Array(repeating: 0xFF22_3344, count: w * 12))
+    private struct Payload {
+        let id: Int64
+        let src: RecyclablePixels
+        let tgt: RecyclablePixels
     }
 
     func testInvariantsHoldUnderRandomOperations() throws {
@@ -57,12 +76,24 @@ final class EngineFuzzTests: XCTestCase {
         let bounded = [OverflowStrategy.queue, .dropNewest, .dropOldest].contains(strategy)
         let clock = ManualClock()
         let engine = VisualEngine(clock: clock, config: EngineConfig(overflowStrategy: strategy, particleBudget: budget))
-        let slots = ["slotA", "slotB", "slotC"]
+        let slotNames = ["slotA", "slotB", "slotC"]
         let rec = Recorder()
         var tracked: [Tracked] = []
         var now = 0.0
         var seq = 0
         let ctx = "seed=\(seed) strategy=\(strategy) budget=\(budget)"
+
+        var renderSlots: [String: RenderSlot<Payload>] = [:]
+        for name in slotNames {
+            renderSlots[name] = RenderSlot<Payload>(
+                onRelease: { p in
+                    p.src.recycled = true
+                    p.tgt.recycled = true
+                    rec.byId[p.id]?.releaseCount += 1
+                },
+                onChanged: {}
+            )
+        }
 
         rec.onActivated = { t in
             if bounded && engine.particleUsage > budget {
@@ -71,6 +102,12 @@ final class EngineFuzzTests: XCTestCase {
             if let slot = t.slot {
                 for o in tracked where o.slot == slot && o.seq < t.seq && !o.handle.state.isTerminal {
                     t.violations.append("同位更早的句柄 \(o.handle.id) 尚未终态（\(o.handle.state)）就放行了")
+                }
+            }
+            if strategy == .queue {
+                let mine = t.handle.queueSeq
+                for o in tracked where o !== t && o.handle.isQueued && (mine < 0 || o.handle.queueSeq < mine) {
+                    t.violations.append("插队：h\(o.handle.id)（入队 #\(o.handle.queueSeq)）仍在排队，h\(t.handle.id)（入队 #\(mine)）却先放行")
                 }
             }
         }
@@ -95,7 +132,11 @@ final class EngineFuzzTests: XCTestCase {
                     expect(!h.isAwaitingHandoff, "\(at) 终态仍在等交接")
                     expect(!h.holdsParticleData, "\(at) 终态仍持粒子场")
                     expect(h.currentRender() == RenderInstruction.none, "\(at) 终态渲染指令非 none")
-                    expect(t.notifiedAfterTerminal, "\(at) 终态未通知渲染面")
+                    if t.slot != nil {
+                        expect(t.releaseCount == 1, "\(at) 渲染位载荷释放次数 \(t.releaseCount)（应恰好 1 次）")
+                    } else {
+                        expect(t.notifiedAfterTerminal, "\(at) 终态未通知渲染面")
+                    }
                 }
                 if h.state == .active && h.currentRender() == .staticTarget {
                     expect(!h.holdsParticleData, "\(at) 停在最终画面仍持粒子场")
@@ -107,7 +148,7 @@ final class EngineFuzzTests: XCTestCase {
             }
             for h in active { expect(h.state == .active || h.state == .cancelling, "运行列表含 \(h.state)") }
             if bounded { expect(engine.particleUsage <= budget, "占用 \(engine.particleUsage) > 预算 \(budget)") }
-            for slot in slots {
+            for slot in slotNames {
                 let n = tracked.filter { $0.slot == slot && $0.handle.state == .active }.count
                 expect(n <= 1, "\(slot) 上同时有 \(n) 个 active")
             }
@@ -115,26 +156,52 @@ final class EngineFuzzTests: XCTestCase {
         }
 
         func play() throws {
-            let slot: String? = r(4) == 0 ? nil : slots[r(slots.count)]
-            let ir = IRTemplates.dissolve(holdMs: Double(100 + r(900)), holdMode: r(3) == 0 ? .jitter : .static)
-            let req = PlayRequest(ir: ir, source: block(8 * (1 + r(5))), target: block(8 * (1 + r(5))), listener: rec,
+            let slot: String? = r(4) == 0 ? nil : slotNames[r(slotNames.count)]
+            var ir = IRTemplates.dissolve(holdMs: Double(100 + r(900)), holdMode: r(3) == 0 ? .jitter : .static)
+            let malformed = r(20) == 0
+            if malformed { ir.phases[1].range = [150] }
+            let src = RecyclablePixels(8 * (1 + r(5)))
+            let tgt = RecyclablePixels(8 * (1 + r(5)))
+            let cancelFast = r(10) == 0
+            let req = PlayRequest(ir: ir, source: src, target: tgt, listener: rec,
                                   reducedMotion: r(8) == 0, slot: slot.map { AnyHashable($0) },
                                   preemptMode: r(2) == 0 ? .teardown : .reverse)
-            rec.log("play slot=\(slot ?? "nil") mode=\(req.preemptMode) reduced=\(req.reducedMotion)")
-            guard let h = try engine.play(req).handle else { return }
+            rec.log("play slot=\(slot ?? "nil") mode=\(req.preemptMode) malformed=\(malformed) cancelOnActive=\(cancelFast)")
+            let res: PlayResult
+            do {
+                res = try engine.play(req)
+            } catch let e as IRInvalid {
+                XCTAssertTrue(malformed, "\(ctx) 合法 IR 被拒：\(e.errors)")
+                return
+            }
+            XCTAssertFalse(malformed, "\(ctx) 畸形 IR 未被拒")
+            guard let h = res.handle else { return }
             rec.log("  = h\(h.id) \(h.state.rawValue) queued=\(h.isQueued) awaiting=\(h.isAwaitingHandoff)")
             let t = Tracked(h, slot, seq)
             seq += 1
             tracked.append(t)
             rec.byId[h.id] = t
             if h.state == .active { rec.onActivated?(t) }
-            h.frameObserver = { [unowned h, unowned t] in if h.state.isTerminal { t.notifiedAfterTerminal = true } }
+            if cancelFast {
+                if h.state == .active {
+                    rec.log("  (active 回调内取消 h\(h.id))")
+                    h.cancel(.teardown)
+                } else {
+                    rec.cancelOnActive.insert(h.id)
+                }
+            }
+            if let slot = slot {
+                renderSlots[slot]!.attach(h, Payload(id: h.id, src: src, tgt: tgt))
+            } else {
+                h.frameObserver = { [unowned h, unowned t] in if h.state.isTerminal { t.notifiedAfterTerminal = true } }
+                if h.state.isTerminal { t.notifiedAfterTerminal = true }
+            }
         }
 
         func pick() -> Tracked? { tracked.isEmpty ? nil : tracked[r(tracked.count)] }
 
         for i in 0..<80 {
-            switch r(10) {
+            switch r(12) {
             case 0, 1, 2, 3:
                 try play()
             case 4, 5:
@@ -150,6 +217,10 @@ final class EngineFuzzTests: XCTestCase {
                     rec.log("error h\(h.id) (was \(h.state.rawValue))")
                     h.reportError(NSError(domain: "fuzz", code: 0))
                 }
+            case 7:
+                let slot = slotNames[r(slotNames.count)]
+                rec.log("detach \(slot)")
+                renderSlots[slot]!.detach()
             default:
                 now += Double(r(250))
                 rec.log("frame \(now)")

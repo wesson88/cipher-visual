@@ -19,5 +19,7 @@ let package = Package(
         // UIKit：CADisplayLink 帧时钟 + 视图渲染 + VisualContent 解析（镜像 android/cipher-visual）
         .target(name: "CipherVisual", dependencies: ["CipherVisualCore"], path: "ios/Sources/CipherVisual"),
         .testTarget(name: "CipherVisualCoreTests", dependencies: ["CipherVisualCore"], path: "ios/Tests/CipherVisualCoreTests"),
+        // UIKit 层测试：源码以 canImport(UIKit) 包裹，macOS 上编译为空，CI 在 iOS 模拟器上跑
+        .testTarget(name: "CipherVisualTests", dependencies: ["CipherVisual", "CipherVisualCore"], path: "ios/Tests/CipherVisualTests"),
     ]
 )

@@ -117,6 +117,7 @@ public final class VisualEngine {
     /// 渲染位 → 该位上所有未终态句柄。不能只记「最新一个」：最新的被撤回时，更早的可能仍在倒放
     private var slotMembers: [AnyHashable: [VisualHandle]] = [:]
     private var releasing = false
+    private var nextQueueSeq: Int64 = 0
     private var nextId: Int64 = 1
     private var subscribed = false
     private lazy var frameCallback = FrameCallback { [weak self] nanos in self?.onFrame(nanos) }
@@ -208,10 +209,11 @@ public final class VisualEngine {
 
     // MARK: 内部
 
-    private func decide(_ handle: VisualHandle) -> AdmissionDecision {
+    /// - Parameter ahead: 排在它前面的排队数（新请求 / 交接后放行 = 当前队长；队头出队 = 0）
+    private func decide(_ handle: VisualHandle, ahead: Int) -> AdmissionDecision {
         let costs = running.map { RunningCost(id: $0.id, cost: $0.cost()) }
         if handle.request.reducedMotion {
-            return Admission.decide(config.overflowStrategy, budget: config.particleBudget, running: costs, ladderCosts: [0])
+            return Admission.decide(config.overflowStrategy, budget: config.particleBudget, running: costs, ladderCosts: [0], queued: ahead)
         }
         let usage = costs.reduce(0) { $0 + $1.cost }
         let c0 = handle.fieldAt(0).count
@@ -221,12 +223,12 @@ public final class VisualEngine {
         } else {
             ladder = [c0]
         }
-        return Admission.decide(config.overflowStrategy, budget: config.particleBudget, running: costs, ladderCosts: ladder)
+        return Admission.decide(config.overflowStrategy, budget: config.particleBudget, running: costs, ladderCosts: ladder, queued: ahead)
     }
 
     /// 裁决并启动；挤占且被挤者走 reverse 时进入等待（交接完成后由 `finish` 重新裁决）。
     private func admitOrWait(_ handle: VisualHandle, announced: Bool) -> PlayResult {
-        switch decide(handle) {
+        switch decide(handle, ahead: queue.count) {
         case let .admit(level, evict):
             for id in evict {
                 guard let victim = running.first(where: { $0.id == id }) else { continue }
@@ -240,6 +242,8 @@ public final class VisualEngine {
             return .started(handle)
         case .queue:
             handle.queued = true
+            handle.queueSeq = nextQueueSeq
+            nextQueueSeq += 1
             queue.append(handle)
             return .queued(handle)
         case let .reject(reason):
@@ -340,7 +344,7 @@ public final class VisualEngine {
 
     private func drainQueue() {
         while let head = queue.first {
-            switch decide(head) {
+            switch decide(head, ahead: 0) {
             case let .admit(level, _):
                 queue.removeFirst()
                 start(head, level)
@@ -444,6 +448,8 @@ public final class VisualHandle {
     var reverseStartNanos: UInt64?
     var reverseOriginMs = 0.0
     var reverseEndReason: EndReason = .reversed
+    /// 测试钩子：入队序号（-1 = 从未排队），用于断言 queue 严格 FIFO
+    var queueSeq: Int64 = -1
     /// 本句柄在等哪些句柄收回完成 / 哪些句柄在等本句柄
     var awaiting: [VisualHandle] = []
     var waiters: [VisualHandle] = []

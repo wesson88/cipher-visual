@@ -102,6 +102,7 @@ public class VisualEngine(
     /** 渲染位 → 该位上所有未终态句柄（按发起先后）。不能只记「最新一个」：最新的被撤回时，更早的可能仍在倒放。 */
     private val slotMembers = HashMap<Any, MutableList<VisualHandle>>()
     private var releasing = false
+    private var nextQueueSeq = 0L
     private var nextId = 1L
     private var subscribed = false
     private val frameCallback = FrameCallback { onFrame(it) }
@@ -129,11 +130,19 @@ public class VisualEngine(
             // 前任终态时会把空列表整个移出 map，这里必须重新取
             slotMembers.getOrPut(slot) { ArrayList() } += handle
         }
-        val result = if (handle.awaiting.isNotEmpty()) {
-            PlayResult.Queued(handle)
-        } else {
-            drainQueue()
-            admitOrWait(handle, announced = false)
+        val result = try {
+            if (handle.awaiting.isNotEmpty()) {
+                PlayResult.Queued(handle)
+            } else {
+                drainQueue()
+                admitOrWait(handle, announced = false)
+            }
+        } catch (e: Throwable) {
+            // 抛出去的请求不该留在渲染位登记里（否则下次 play 会对它发终态回调）
+            handle.clearAwaiting()
+            removeFromSlot(handle)
+            handle.releaseResources()
+            throw e
         }
         updateSubscription()
         return result
@@ -189,19 +198,27 @@ public class VisualEngine(
 
     private fun gridLadder(gridPx: Int): List<Int> = List(Admission.LADDER_STEPS) { gridPx shl it }
 
-    private fun decide(handle: VisualHandle): AdmissionDecision {
+    /**
+     * @param ahead 排在它前面的排队数（新请求 / 交接后放行 = 当前队长；队头出队 = 0）
+     */
+    private fun decide(handle: VisualHandle, ahead: Int): AdmissionDecision {
         val running = running.map { RunningCost(it.id, it.cost()) }
         if (handle.request.reducedMotion) {
-            return Admission.decide(config.overflowStrategy, config.particleBudget, running, listOf(0))
+            return Admission.decide(config.overflowStrategy, config.particleBudget, running, listOf(0), ahead)
         }
         val usage = running.sumOf { it.cost }
-        val c0 = handle.fieldAt(0).size
-        val ladder = if (config.overflowStrategy == OverflowStrategy.DEGRADE && usage + c0 > config.particleBudget) {
-            List(Admission.LADDER_STEPS) { handle.fieldAt(it).size }
-        } else {
-            listOf(c0)
+        // 首次建粒子场要读内容像素：等交接 / 排队期间宿主可能已回收位图（View.detach），读失败按不可用拒绝，不让异常逃出帧回调
+        val ladder = try {
+            val c0 = handle.fieldAt(0).size
+            if (config.overflowStrategy == OverflowStrategy.DEGRADE && usage + c0 > config.particleBudget) {
+                List(Admission.LADDER_STEPS) { handle.fieldAt(it).size }
+            } else {
+                listOf(c0)
+            }
+        } catch (e: RuntimeException) {
+            return AdmissionDecision.Reject(RejectReason.CONTENT_UNAVAILABLE)
         }
-        return Admission.decide(config.overflowStrategy, config.particleBudget, running, ladder)
+        return Admission.decide(config.overflowStrategy, config.particleBudget, running, ladder, ahead)
     }
 
     /**
@@ -209,7 +226,7 @@ public class VisualEngine(
      * @param announced 句柄是否已作为 Queued 交给调用方（决定拒绝时走终态还是直接返回 Rejected）
      */
     private fun admitOrWait(handle: VisualHandle, announced: Boolean): PlayResult {
-        return when (val d = decide(handle)) {
+        return when (val d = decide(handle, queue.size)) {
             is AdmissionDecision.Admit -> {
                 for (id in d.evict) {
                     val victim = running.firstOrNull { it.id == id } ?: continue
@@ -228,6 +245,7 @@ public class VisualEngine(
             }
             AdmissionDecision.Queue -> {
                 handle.queued = true
+                handle.queueSeq = nextQueueSeq++
                 queue.addLast(handle)
                 PlayResult.Queued(handle)
             }
@@ -345,7 +363,7 @@ public class VisualEngine(
     private fun drainQueue() {
         while (queue.isNotEmpty()) {
             val head = queue.first()
-            when (val d = decide(head)) {
+            when (val d = decide(head, 0)) {
                 is AdmissionDecision.Admit -> {
                     queue.removeFirst()
                     start(head, d.gridLevel)
@@ -485,6 +503,9 @@ public class VisualHandle internal constructor(
     internal var reverseStartNanos: Long? = null
     internal var reverseOriginMs = 0.0
     internal var reverseEndReason = EndReason.REVERSED
+
+    /** 测试钩子：入队序号（-1 = 从未排队），用于断言 QUEUE 严格 FIFO */
+    internal var queueSeq = -1L
 
     /** 本句柄在等哪些句柄收回完成 / 哪些句柄在等本句柄 */
     internal val awaiting = LinkedHashSet<VisualHandle>()

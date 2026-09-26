@@ -121,7 +121,8 @@ public class CipherVisual(
         val result = try {
             // 渲染位 = view：同一 view 上新请求先取消前一次（库保证一个 view 同时只渲染一个句柄）
             engine.play(PlayRequest(ir, source.pixels, tgt.pixels, listener, reduced, prepared, slot = view, preemptMode = options.preemptMode))
-        } catch (e: IllegalArgumentException) {
+        } catch (e: Throwable) {
+            // 任何失败（不只非法 IR）都不能泄漏已解析的位图
             source.recycleIfOwned()
             tgt.recycleIfOwned()
             throw e

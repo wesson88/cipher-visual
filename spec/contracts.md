@@ -38,6 +38,8 @@ facade（CipherVisual）→ VisualEngine（时间轴推进 / 锚点 / 预算）�
 | `PRIM_TYPE` / `PRIM_SHAPE` / `PRIM_TIMES` / `PRIM_EASE` | 非 keyframe / 长度 <2 或 times≠values / times 非严格递增 / 未知缓动 |
 | `ANCHOR_ID_DUP` / `ANCHOR_RANGE` | 锚点 id 重复 / `at ∉ [0, 最后相位 end]` |
 
+`range` 必须恰好两个数。畸形的相位只报 `PHASE_RANGE`，依赖它的 `PHASE_START` / `PHASE_GAP`（与相邻相位的衔接）/ `ANCHOR_RANGE`（最后相位畸形时）检查跳过——不越界、不连坐（golden `phase-range-*`）。
+
 ## 3. PRNG：mulberry32
 
 ```
@@ -94,11 +96,20 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 | 打满裁决 | 见 golden `admission.json`；grid 阶梯 = grid, 2·grid, 4·grid |
 | 单请求超总预算 | `queue` / `dropNewest` / `dropOldest` 下，请求在最低可用档即超总预算 → 直接拒绝 `overTotalBudget`（排队会永久饿死队列）；`dropNewest` 当前占满 → `budgetFull`。拒绝原因随 `PlayResult.Rejected` / `rejectReason` 交给接入方 |
 | 取消交接 | **最新来的主动取消前一次，前一次终态回调发出后才启动最新的**。两条路径：① 同渲染位（`slot`，平台层 = View）上新请求取消该位所有未终态前任；② `dropOldest` 挤占。取消方式取新请求的 `preemptMode`（默认 teardown，可选 reverse）。未启动的前任直接撤回（先于在跑的，避免级联放行造成闪现）；teardown 同步终态后立即裁决新请求；reverse 则新请求以 `Queued` 停在 idle，等前任倒放完、终态回调后再裁决 |
+| 排队（`queue`） | **严格 FIFO**：队列非空时，新请求与交接后放行的句柄一律排到队尾，放得下也不插队；队头按入队顺序出队（golden 含 `queued` 字段的用例） |
+| 内容不可读 | 首次建粒子场读像素失败（宿主已回收位图，如 View 被 detach）→ 拒绝 `contentUnavailable`：未交给调用方的直接返回 `Rejected`，已返回 `Queued` 的以 `REJECTED` 终结；异常不逃出帧回调 |
+| play 异常回滚 | 渲染位登记之后若抛异常：撤销登记与等待关系、释放预建粒子场，再向上抛 |
 | 交接后裁决 | 交接完成后重新裁决；被拒则新句柄 idle → completed（`endReason = REJECTED`，`rejectReason` 给原因）。挤占引发级联放行后必须重新裁决，不按旧计划启动 |
 | 静态停留释放 | active 且 t ≥ hold.start 且 static（`StaticTarget`）时粒子场**主动释放**，只保留渲染 target 所需；jitter 停留与减少动效不涉及 |
 | reverse 重建 | 从已释放状态发起 reverse（App cancel 或交接 preempt）须重建粒子场并过裁决：按 grid 阶梯取第一档 `占用 + 成本 ≤ 预算` 的（与打满策略无关）；三档都放不下 → 降为 teardown，`endReason = TEARDOWN`（交接路径保持 PREEMPTED / EVICTED）。重建由种子协议保证与原粒子场逐位一致 |
 | 预算不变式 | `queue` / `dropNewest` / `dropOldest` 下**任意时刻**占用 ≤ 预算（fuzz 每步断言）；`degrade` 最粗档兜底与 `dropFrame` 按定义可超 |
 | 失败 | 平台渲染异常 → `reportError` → failed（可见失败，不静默降级） |
+
+## 6b. 渲染位簿记（`RenderSlot`，平台无关）
+
+平台 View 各持一个 `RenderSlot`：「正在渲染」+「等交接」两位。新句柄挂上时，若正在渲染的前一次还在收回则进等交接位；任何句柄到终态即释放载荷（平台层回收库持有的位图），等交接的随即顶上；**挂载时句柄已终态（监听器在 active 回调里当场取消）也立即释放**。每个挂上的句柄载荷恰好释放一次（fuzz 断言）。
+
+iOS 另有一条：source 在 play 时**归一到 target 的 scale**（重采样），粒子场的 source / target 坐标才在同一像素空间。
 
 ## 7. 句柄状态机
 
@@ -132,4 +143,5 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 | 6 | 预算默认值 `LINEAR_X_FULL = 8000 / ERM_Z = 3000` | 仍是**拍值，待真机标定**（边界 §6.4） | — |
 | 7 | 新请求与前一次的关系 | 最新的取消前一次，前一次终态回调后再启动；同渲染位与 `dropOldest` 都走交接；默认 teardown、可配 reverse（2026-09-26） | 写回边界 §五/§六 |
 | 8 | 单请求超总预算 | 直接拒绝并给出原因（`overTotalBudget`），不排队（2026-09-26） | 写回边界 §六 |
+| 10 | `queue` 是否允许插队 | 严格 FIFO（2026-09-26，code-review #2 选 a） | 写回边界 §6.2 |
 | 9 | 停在最终画面的粒子资源 / reverse 超预算 | 静态停留即释放粒子场；reverse 重建过裁决，按阶梯降档，放不下降为 teardown（2026-09-26，选项 A） | 写回边界 §6.1 |

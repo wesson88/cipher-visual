@@ -119,6 +119,21 @@ public final class ResolvedContent: PixelSource {
         buffer = []
     }
 
+    /// 归一到目标 scale：粒子场把 source 坐标与 target 坐标混在同一空间插值，两者必须同一像素密度。
+    /// 同 scale 时原样返回。
+    func normalized(toScale target: CGFloat) -> ResolvedContent? {
+        guard abs(scale - target) > 0.001 else { return self }
+        let w = max(Int((CGFloat(width) / scale * target).rounded()), 1)
+        let h = max(Int((CGFloat(height) / scale * target).rounded()), 1)
+        let info = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let scaled = ctx.makeImage() else { return nil }
+        return ResolvedContent(scaled, scale: target)
+    }
+
     static func resolve(_ content: VisualContent) -> ResolvedContent? {
         switch content {
         case let .image(img):
@@ -147,25 +162,30 @@ public final class ResolvedContent: PixelSource {
 /// 新句柄挂上时若前一次正在 reverse 收回，继续画它直到终态再切到新句柄（与引擎取消交接一致）。
 /// 粒子迸发会越出内容边界：宿主若不想被裁剪，令 `clipsToBounds = false`（默认即 false）。
 public final class CipherVisualView: UIView {
-    private final class Bound {
-        let handle: VisualHandle
+    final class Contents {
         let source: ResolvedContent
         let target: ResolvedContent
 
-        init(_ handle: VisualHandle, _ source: ResolvedContent, _ target: ResolvedContent) {
-            self.handle = handle
+        init(_ source: ResolvedContent, _ target: ResolvedContent) {
             self.source = source
             self.target = target
         }
     }
 
-    /// 正在渲染的
-    private var current: Bound?
-    /// 等交接的（前一次收回完成后切上来）
-    private var pending: Bound?
+    /// 挂载簿记交给平台无关的 `RenderSlot`（与 Android 同一实现）
+    private lazy var slot = RenderSlot<Contents>(
+        onRelease: { c in
+            c.source.releasePixels()
+            c.target.releasePixels()
+        },
+        onChanged: { [weak self] in
+            self?.invalidateIntrinsicContentSize()
+            self?.setNeedsDisplay()
+        }
+    )
 
     /// 最新挂上的句柄（可能仍在等交接，也可能已终态）
-    public var attachedHandle: VisualHandle? { (pending ?? current)?.handle }
+    public var attachedHandle: VisualHandle? { slot.latestHandle }
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -181,63 +201,25 @@ public final class CipherVisualView: UIView {
     }
 
     func attach(_ handle: VisualHandle, source: ResolvedContent, target: ResolvedContent) {
-        let b = Bound(handle, source, target)
-        if let cur = current, !cur.handle.state.isTerminal, cur.handle.state != .idle {
-            // 前一次还在收回（reverse）：继续画它，新句柄排在后面
-            if let p = pending { release(p) }
-            pending = b
-        } else {
-            if let cur = current { release(cur) }
-            current = b
-        }
-        handle.frameObserver = { [weak self, weak handle] in
-            guard let self = self, let handle = handle else { return }
-            self.onHandleFrame(handle)
-        }
-        invalidateIntrinsicContentSize()
-        setNeedsDisplay()
+        slot.attach(handle, Contents(source, target))
     }
 
     /// 解除挂载并释放库持有的像素。不改变句柄状态（收回请调 `handle.cancel`）。
     public func detach() {
-        if let c = current { release(c) }
-        if let p = pending { release(p) }
-        current = nil
-        pending = nil
-        setNeedsDisplay()
-    }
-
-    private func release(_ b: Bound) {
-        b.handle.frameObserver = nil
-        b.source.releasePixels()
-        b.target.releasePixels()
+        slot.detach()
     }
 
     public override var intrinsicContentSize: CGSize {
-        guard let b = pending ?? current else { return .zero }
-        let s = b.target.scale
-        return CGSize(width: CGFloat(max(b.source.width, b.target.width)) / s,
-                      height: CGFloat(max(b.source.height, b.target.height)) / s)
-    }
-
-    private func onHandleFrame(_ h: VisualHandle) {
-        if h.state.isTerminal {
-            if let cur = current, cur.handle === h {
-                release(cur)
-                current = pending
-                pending = nil
-                invalidateIntrinsicContentSize()
-            } else if let p = pending, p.handle === h {
-                release(p)
-                pending = nil
-            }
-        }
-        setNeedsDisplay()
+        guard let c = slot.latestPayload else { return .zero }
+        let s = c.target.scale
+        return CGSize(width: CGFloat(max(c.source.width, c.target.width)) / s,
+                      height: CGFloat(max(c.source.height, c.target.height)) / s)
     }
 
     public override func draw(_ rect: CGRect) {
-        guard let b = current, b.handle.state != .idle, let ctx = UIGraphicsGetCurrentContext() else { return }
-        let h = b.handle
+        guard let h = slot.currentHandle, let b = slot.currentPayload, h.state != .idle,
+              let ctx = UIGraphicsGetCurrentContext() else { return }
+        // source 已在 play 时归一到 target 的 scale，二者同一像素空间
         let scale = b.target.scale
         ctx.saveGState()
         ctx.scaleBy(x: 1 / scale, y: 1 / scale)
@@ -345,7 +327,8 @@ public final class CipherVisual {
     @discardableResult
     public func play(in view: CipherVisualView, ir: TimelineIR, source: VisualContent, target: VisualContent,
                      options: PlayOptions = PlayOptions(), listener: VisualListener? = nil) throws -> PlayResult {
-        guard let src = ResolvedContent.resolve(source), let tgt = ResolvedContent.resolve(target) else {
+        guard let tgt = ResolvedContent.resolve(target),
+              let src = ResolvedContent.resolve(source)?.normalized(toScale: tgt.scale) else {
             throw CipherVisualError.contentUnresolvable
         }
         let reduced = options.respectReducedMotion && isReducedMotionEnabled

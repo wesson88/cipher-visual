@@ -40,6 +40,9 @@ public enum class RejectReason(public val wire: String) {
 
     /** 单个请求在最低可用档即超总预算：排队会永久饿死队列、挤占也放不下，直接拒绝 */
     OVER_TOTAL_BUDGET("overTotalBudget"),
+
+    /** 内容已不可读（如宿主提前回收了位图），无法建粒子场。引擎层判定，不经 [Admission] */
+    CONTENT_UNAVAILABLE("contentUnavailable"),
 }
 
 public sealed interface AdmissionDecision {
@@ -56,6 +59,7 @@ public data class RunningCost(val id: Long, val cost: Int)
  * 预算裁决：纯函数（contracts/golden/admission.json）。
  *
  * @param ladderCosts 新 handle 在 grid、grid×2、grid×4 下的粒子数
+ * @param queued 排在本请求前面的排队数。`QUEUE` 严格 FIFO：前面有人排队就排队尾，放得下也不插队
  */
 public object Admission {
     public const val LADDER_STEPS: Int = 3
@@ -65,6 +69,7 @@ public object Admission {
         budget: Int,
         running: List<RunningCost>,
         ladderCosts: List<Int>,
+        queued: Int = 0,
     ): AdmissionDecision {
         val usage = running.sumOf { it.cost }
         fun fits(c: Int, u: Int = usage) = u + c <= budget
@@ -77,7 +82,7 @@ public object Admission {
             }
             OverflowStrategy.DROP_FRAME -> AdmissionDecision.Admit(0, emptyList())
             OverflowStrategy.QUEUE ->
-                if (fits(ladderCosts[0])) AdmissionDecision.Admit(0, emptyList()) else AdmissionDecision.Queue
+                if (queued == 0 && fits(ladderCosts[0])) AdmissionDecision.Admit(0, emptyList()) else AdmissionDecision.Queue
             OverflowStrategy.DROP_NEWEST ->
                 if (fits(ladderCosts[0])) AdmissionDecision.Admit(0, emptyList()) else AdmissionDecision.Reject(RejectReason.BUDGET_FULL)
             OverflowStrategy.DROP_OLDEST -> {

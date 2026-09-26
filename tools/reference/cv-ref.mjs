@@ -123,11 +123,17 @@ export function validateIr(ir) {
   if (phases.length === 0) add("PHASES_EMPTY");
   const ids = phases.map((p) => p.id);
   if (new Set(ids).size !== ids.length) add("PHASE_ID_DUP");
+  // range 必须恰好两个数；畸形的只报 PHASE_RANGE，依赖它的首位 / 衔接 / 锚点范围检查跳过（不越界、不连坐）
+  const wellFormed = (p) => Array.isArray(p.range) && p.range.length === 2;
   phases.forEach((p, i) => {
-    const [s, e] = p.range;
-    if (!(s < e)) add("PHASE_RANGE");
-    if (i === 0 && s !== 0) add("PHASE_START");
-    if (i > 0 && phases[i - 1].range[1] !== s) add("PHASE_GAP");
+    if (!wellFormed(p)) {
+      add("PHASE_RANGE");
+    } else {
+      const [s, e] = p.range;
+      if (!(s < e)) add("PHASE_RANGE");
+      if (i === 0 && s !== 0) add("PHASE_START");
+      if (i > 0 && wellFormed(phases[i - 1]) && phases[i - 1].range[1] !== s) add("PHASE_GAP");
+    }
     if (p.mode !== undefined && p.mode !== null) {
       if (p.id !== "hold") add("PHASE_MODE_SCOPE");
       else if (p.mode !== "static" && p.mode !== "jitter") add("PHASE_MODE");
@@ -147,10 +153,13 @@ export function validateIr(ir) {
     if (!(p.ease in EASINGS)) add("PRIM_EASE");
   }
 
-  const end = phases.length ? phases[phases.length - 1].range[1] : 0;
+  const last = phases[phases.length - 1];
   const aids = (ir.anchors || []).map((a) => a.id);
   if (new Set(aids).size !== aids.length) add("ANCHOR_ID_DUP");
-  for (const a of ir.anchors || []) if (!(a.at >= 0 && a.at <= end)) add("ANCHOR_RANGE");
+  if (!last || wellFormed(last)) {
+    const end = last ? last.range[1] : 0;
+    for (const a of ir.anchors || []) if (!(a.at >= 0 && a.at <= end)) add("ANCHOR_RANGE");
+  }
   return errs;
 }
 
@@ -276,8 +285,9 @@ export function transition(state, event) {
 
 // ladderCosts[i] = 该 handle 在粒子网格第 i 档（grid, grid*2, grid*4）下的粒子数
 // running = [{ id, cost }] 按启动先后排列（最早在前）
+// queued = 排在本请求前面的排队数；queue 策略严格 FIFO：前面有人排队就排到队尾，放得下也不插队
 // 拒绝原因：budgetFull = dropNewest 下当前占满；overTotalBudget = 单请求（最低可用档）即超总预算，排队 / 挤占都无意义
-export function admit(strategy, budget, running, ladderCosts) {
+export function admit(strategy, budget, running, ladderCosts, queued = 0) {
   const usage = running.reduce((s, r) => s + r.cost, 0);
   const fits = (c, u = usage) => u + c <= budget;
   if ((strategy === "queue" || strategy === "dropNewest" || strategy === "dropOldest") && ladderCosts[0] > budget) {
@@ -291,7 +301,7 @@ export function admit(strategy, budget, running, ladderCosts) {
     case "dropFrame":
       return { kind: "admit", grid: 0, evict: [] };
     case "queue":
-      return fits(ladderCosts[0]) ? { kind: "admit", grid: 0, evict: [] } : { kind: "queue" };
+      return queued === 0 && fits(ladderCosts[0]) ? { kind: "admit", grid: 0, evict: [] } : { kind: "queue" };
     case "dropNewest":
       return fits(ladderCosts[0]) ? { kind: "admit", grid: 0, evict: [] } : { kind: "reject", reason: "budgetFull" };
     case "dropOldest": {

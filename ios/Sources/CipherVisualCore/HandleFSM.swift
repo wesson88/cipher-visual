@@ -61,6 +61,8 @@ public enum RejectReason: String {
     case budgetFull
     /// 单个请求在最低可用档即超总预算：排队会永久饿死队列、挤占也放不下，直接拒绝
     case overTotalBudget
+    /// 内容已不可读，无法建粒子场（引擎层判定；iOS 像素源不抛错，保留以与 Android 同构）
+    case contentUnavailable
 }
 
 public enum AdmissionDecision: Equatable {
@@ -83,7 +85,9 @@ public struct RunningCost {
 public enum Admission {
     public static let ladderSteps = 3
 
-    public static func decide(_ strategy: OverflowStrategy, budget: Int, running: [RunningCost], ladderCosts: [Int]) -> AdmissionDecision {
+    /// - Parameter queued: 排在本请求前面的排队数。queue 严格 FIFO：前面有人排队就排队尾，放得下也不插队
+    public static func decide(_ strategy: OverflowStrategy, budget: Int, running: [RunningCost], ladderCosts: [Int],
+                              queued: Int = 0) -> AdmissionDecision {
         let usage = running.reduce(0) { $0 + $1.cost }
         func fits(_ c: Int, _ u: Int) -> Bool { u + c <= budget }
         if [.queue, .dropNewest, .dropOldest].contains(strategy) && ladderCosts[0] > budget {
@@ -96,7 +100,7 @@ public enum Admission {
         case .dropFrame:
             return .admit(gridLevel: 0, evict: [])
         case .queue:
-            return fits(ladderCosts[0], usage) ? .admit(gridLevel: 0, evict: []) : .queue
+            return queued == 0 && fits(ladderCosts[0], usage) ? .admit(gridLevel: 0, evict: []) : .queue
         case .dropNewest:
             return fits(ladderCosts[0], usage) ? .admit(gridLevel: 0, evict: []) : .reject(.budgetFull)
         case .dropOldest:

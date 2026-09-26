@@ -2016,6 +2016,350 @@
       "errors": [
         "ANCHOR_ID_DUP"
       ]
+    },
+    {
+      "name": "phase-range-short",
+      "ir": {
+        "schema_version": 1,
+        "effect": "dissolve",
+        "model": {
+          "type": "particleField",
+          "sampler": {
+            "grid_px": 4,
+            "jitter_px": 1
+          },
+          "seed": 1059724411
+        },
+        "phases": [
+          {
+            "id": "burst",
+            "range": [
+              0,
+              150
+            ]
+          },
+          {
+            "id": "dissolve",
+            "range": [
+              150
+            ]
+          },
+          {
+            "id": "resolve",
+            "range": [
+              350,
+              600
+            ]
+          },
+          {
+            "id": "hold",
+            "range": [
+              600,
+              5600
+            ],
+            "mode": "static"
+          }
+        ],
+        "trajectory": {
+          "physics": {
+            "v0": 300,
+            "drag": 4,
+            "gravity": 200
+          },
+          "driver": "prim_burst"
+        },
+        "primitives": {
+          "prim_burst": {
+            "type": "keyframe",
+            "times": [
+              0,
+              150,
+              600
+            ],
+            "values": [
+              0,
+              1,
+              0
+            ],
+            "ease": "cubicOut"
+          }
+        },
+        "anchors": [
+          {
+            "id": "onBurst",
+            "at": 0
+          },
+          {
+            "id": "onResolve",
+            "at": 600
+          },
+          {
+            "id": "onHoldExpired",
+            "at": 5600
+          }
+        ]
+      },
+      "errors": [
+        "PHASE_RANGE"
+      ]
+    },
+    {
+      "name": "phase-range-empty",
+      "ir": {
+        "schema_version": 1,
+        "effect": "dissolve",
+        "model": {
+          "type": "particleField",
+          "sampler": {
+            "grid_px": 4,
+            "jitter_px": 1
+          },
+          "seed": 1059724411
+        },
+        "phases": [
+          {
+            "id": "burst",
+            "range": []
+          },
+          {
+            "id": "dissolve",
+            "range": [
+              150,
+              350
+            ]
+          },
+          {
+            "id": "resolve",
+            "range": [
+              350,
+              600
+            ]
+          },
+          {
+            "id": "hold",
+            "range": [
+              600,
+              5600
+            ],
+            "mode": "static"
+          }
+        ],
+        "trajectory": {
+          "physics": {
+            "v0": 300,
+            "drag": 4,
+            "gravity": 200
+          },
+          "driver": "prim_burst"
+        },
+        "primitives": {
+          "prim_burst": {
+            "type": "keyframe",
+            "times": [
+              0,
+              150,
+              600
+            ],
+            "values": [
+              0,
+              1,
+              0
+            ],
+            "ease": "cubicOut"
+          }
+        },
+        "anchors": [
+          {
+            "id": "onBurst",
+            "at": 0
+          },
+          {
+            "id": "onResolve",
+            "at": 600
+          },
+          {
+            "id": "onHoldExpired",
+            "at": 5600
+          }
+        ]
+      },
+      "errors": [
+        "PHASE_RANGE"
+      ]
+    },
+    {
+      "name": "phase-range-long",
+      "ir": {
+        "schema_version": 1,
+        "effect": "dissolve",
+        "model": {
+          "type": "particleField",
+          "sampler": {
+            "grid_px": 4,
+            "jitter_px": 1
+          },
+          "seed": 1059724411
+        },
+        "phases": [
+          {
+            "id": "burst",
+            "range": [
+              0,
+              150
+            ]
+          },
+          {
+            "id": "dissolve",
+            "range": [
+              150,
+              350
+            ]
+          },
+          {
+            "id": "resolve",
+            "range": [
+              350,
+              600
+            ]
+          },
+          {
+            "id": "hold",
+            "range": [
+              600,
+              5600,
+              7000
+            ],
+            "mode": "static"
+          }
+        ],
+        "trajectory": {
+          "physics": {
+            "v0": 300,
+            "drag": 4,
+            "gravity": 200
+          },
+          "driver": "prim_burst"
+        },
+        "primitives": {
+          "prim_burst": {
+            "type": "keyframe",
+            "times": [
+              0,
+              150,
+              600
+            ],
+            "values": [
+              0,
+              1,
+              0
+            ],
+            "ease": "cubicOut"
+          }
+        },
+        "anchors": [
+          {
+            "id": "onBurst",
+            "at": 0
+          },
+          {
+            "id": "onResolve",
+            "at": 600
+          },
+          {
+            "id": "onHoldExpired",
+            "at": 5600
+          }
+        ]
+      },
+      "errors": [
+        "PHASE_RANGE"
+      ]
+    },
+    {
+      "name": "phase-range-short-last",
+      "ir": {
+        "schema_version": 1,
+        "effect": "dissolve",
+        "model": {
+          "type": "particleField",
+          "sampler": {
+            "grid_px": 4,
+            "jitter_px": 1
+          },
+          "seed": 1059724411
+        },
+        "phases": [
+          {
+            "id": "burst",
+            "range": [
+              0,
+              150
+            ]
+          },
+          {
+            "id": "dissolve",
+            "range": [
+              150,
+              350
+            ]
+          },
+          {
+            "id": "resolve",
+            "range": [
+              350,
+              600
+            ]
+          },
+          {
+            "id": "hold",
+            "range": [
+              600
+            ],
+            "mode": "static"
+          }
+        ],
+        "trajectory": {
+          "physics": {
+            "v0": 300,
+            "drag": 4,
+            "gravity": 200
+          },
+          "driver": "prim_burst"
+        },
+        "primitives": {
+          "prim_burst": {
+            "type": "keyframe",
+            "times": [
+              0,
+              150,
+              600
+            ],
+            "values": [
+              0,
+              1,
+              0
+            ],
+            "ease": "cubicOut"
+          }
+        },
+        "anchors": [
+          {
+            "id": "onBurst",
+            "at": 0
+          },
+          {
+            "id": "onResolve",
+            "at": 600
+          },
+          {
+            "id": "onHoldExpired",
+            "at": 5600
+          }
+        ]
+      },
+      "errors": [
+        "PHASE_RANGE"
+      ]
     }
   ]
 }

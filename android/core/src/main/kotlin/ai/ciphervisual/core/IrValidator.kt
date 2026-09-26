@@ -51,10 +51,16 @@ public object IrValidator {
         if (phases.isEmpty()) errs += IrError.PHASES_EMPTY
         val ids = phases.map { it.id }
         if (ids.toSet().size != ids.size) errs += IrError.PHASE_ID_DUP
+        // range 必须恰好两个数；畸形的只报 PHASE_RANGE，依赖它的首位 / 衔接 / 锚点范围检查跳过（不越界、不连坐）
+        fun wellFormed(p: PhaseSpec) = p.range.size == 2
         phases.forEachIndexed { i, p ->
-            if (p.range.size != 2 || !(p.start < p.end)) errs += IrError.PHASE_RANGE
-            if (i == 0 && p.start != 0.0) errs += IrError.PHASE_START
-            if (i > 0 && phases[i - 1].end != p.start) errs += IrError.PHASE_GAP
+            if (!wellFormed(p)) {
+                errs += IrError.PHASE_RANGE
+            } else {
+                if (!(p.start < p.end)) errs += IrError.PHASE_RANGE
+                if (i == 0 && p.start != 0.0) errs += IrError.PHASE_START
+                if (i > 0 && wellFormed(phases[i - 1]) && phases[i - 1].end != p.start) errs += IrError.PHASE_GAP
+            }
             if (p.mode != null) {
                 if (p.id != "hold") errs += IrError.PHASE_MODE_SCOPE
                 else if (HoldMode.fromWire(p.mode) == null) errs += IrError.PHASE_MODE
@@ -78,10 +84,13 @@ public object IrValidator {
             if (Ease.fromWire(p.ease) == null) errs += IrError.PRIM_EASE
         }
 
-        val end = phases.lastOrNull()?.end ?: 0.0
+        val last = phases.lastOrNull()
         val aids = ir.anchors.map { it.id }
         if (aids.toSet().size != aids.size) errs += IrError.ANCHOR_ID_DUP
-        if (ir.anchors.any { !(it.at >= 0 && it.at <= end) }) errs += IrError.ANCHOR_RANGE
+        if (last == null || wellFormed(last)) {
+            val end = last?.end ?: 0.0
+            if (ir.anchors.any { !(it.at >= 0 && it.at <= end) }) errs += IrError.ANCHOR_RANGE
+        }
         return errs
     }
 

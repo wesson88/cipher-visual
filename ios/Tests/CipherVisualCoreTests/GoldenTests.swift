@@ -160,7 +160,8 @@ final class GoldenTests: XCTestCase {
             case "queue": expected = .queue
             default: expected = .reject(RejectReason(rawValue: d["reason"] as! String)!)
             }
-            XCTAssertEqual(expected, Admission.decide(strategy, budget: num(o["budget"]).intValue, running: running, ladderCosts: ladder),
+            XCTAssertEqual(expected, Admission.decide(strategy, budget: num(o["budget"]).intValue, running: running, ladderCosts: ladder,
+                                                  queued: (o["queued"] as? NSNumber)?.intValue ?? 0),
                            "\(strategy) \(ladder)")
         }
     }

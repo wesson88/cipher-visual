@@ -187,7 +187,7 @@ class GoldenTest {
                 "reject" -> AdmissionDecision.Reject(RejectReason.entries.first { it.wire == d["reason"]!!.s })
                 else -> error("unknown kind")
             }
-            assertEquals(expected, Admission.decide(strategy, o["budget"]!!.i, running, ladder), "$strategy ${o["budget"]} $ladder")
+            assertEquals(expected, Admission.decide(strategy, o["budget"]!!.i, running, ladder, o["queued"]?.i ?: 0), "$strategy ${o["budget"]} $ladder")
         }
     }
 

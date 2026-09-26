@@ -226,10 +226,16 @@ public enum IRValidator {
         if phases.isEmpty { errs.insert(.PHASES_EMPTY) }
         let ids = phases.map { $0.id }
         if Set(ids).count != ids.count { errs.insert(.PHASE_ID_DUP) }
+        // range 必须恰好两个数；畸形的只报 PHASE_RANGE，依赖它的首位 / 衔接 / 锚点范围检查跳过（不越界、不连坐）
+        func wellFormed(_ p: PhaseSpec) -> Bool { p.range.count == 2 }
         for (i, p) in phases.enumerated() {
-            if p.range.count != 2 || !(p.start < p.end) { errs.insert(.PHASE_RANGE) }
-            if i == 0 && p.start != 0 { errs.insert(.PHASE_START) }
-            if i > 0 && phases[i - 1].end != p.start { errs.insert(.PHASE_GAP) }
+            if !wellFormed(p) {
+                errs.insert(.PHASE_RANGE)
+            } else {
+                if !(p.start < p.end) { errs.insert(.PHASE_RANGE) }
+                if i == 0 && p.start != 0 { errs.insert(.PHASE_START) }
+                if i > 0 && wellFormed(phases[i - 1]) && phases[i - 1].end != p.start { errs.insert(.PHASE_GAP) }
+            }
             if let mode = p.mode {
                 if p.id != "hold" { errs.insert(.PHASE_MODE_SCOPE) } else if HoldMode(rawValue: mode) == nil { errs.insert(.PHASE_MODE) }
             }
@@ -252,10 +258,12 @@ public enum IRValidator {
             if Ease(rawValue: p.ease) == nil { errs.insert(.PRIM_EASE) }
         }
 
-        let end = phases.last?.end ?? 0
         let aids = ir.anchors.map { $0.id }
         if Set(aids).count != aids.count { errs.insert(.ANCHOR_ID_DUP) }
-        if ir.anchors.contains(where: { !($0.at >= 0 && $0.at <= end) }) { errs.insert(.ANCHOR_RANGE) }
+        if phases.last.map(wellFormed) ?? true {
+            let end = phases.last?.end ?? 0
+            if ir.anchors.contains(where: { !($0.at >= 0 && $0.at <= end) }) { errs.insert(.ANCHOR_RANGE) }
+        }
         return errs
     }
 

@@ -85,6 +85,10 @@ const write = (name, body) =>
     mutate("prim-ease", (ir) => { ir.primitives.prim_burst.ease = "bounce"; }),
     mutate("anchor-range", (ir) => { ir.anchors.push({ id: "late", at: 99999 }); }),
     mutate("anchor-dup", (ir) => { ir.anchors.push({ id: "onBurst", at: 10 }); }),
+    mutate("phase-range-short", (ir) => { ir.phases[1].range = [150]; }),
+    mutate("phase-range-empty", (ir) => { ir.phases[0].range = []; }),
+    mutate("phase-range-long", (ir) => { ir.phases[3].range = [600, 5600, 7000]; }),
+    mutate("phase-range-short-last", (ir) => { ir.phases[3].range = [600]; }),
   ].map((c) => ({ ...c, errors: validateIr(c.ir) }));
   write("ir.json", { templates, validation: cases });
 }
@@ -159,6 +163,12 @@ const empty = bitmap(["....", "...."], PAL);
     }
   }
   cases.push({ strategy: "degrade", budget: 5000, running: [], ladder: [4000, 1000, 250], decision: admit("degrade", 5000, [], [4000, 1000, 250]) });
+  // queue 严格 FIFO：前面有人排队，放得下也排队尾；超总预算仍先拒绝
+  for (const queued of [1, 3]) {
+    cases.push({ strategy: "queue", budget: 8000, running, ladder: [100, 25, 6], queued, decision: admit("queue", 8000, running, [100, 25, 6], queued) });
+    cases.push({ strategy: "queue", budget: 8000, running, ladder: [9000, 2250, 600], queued, decision: admit("queue", 8000, running, [9000, 2250, 600], queued) });
+    cases.push({ strategy: "dropNewest", budget: 8000, running, ladder: [100, 25, 6], queued, decision: admit("dropNewest", 8000, running, [100, 25, 6], queued) });
+  }
   write("admission.json", { cases });
 }
 
