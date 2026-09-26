@@ -13,13 +13,14 @@ public enum class HandleState(public val wire: String) {
     public val isTerminal: Boolean get() = this == COMPLETED || this == FAILED
 }
 
-/** 句柄事件（4 事件；cancel 按 mode 拆成两个 wire 名）。 */
+/** 句柄事件（5 事件；cancel 按 mode 拆成两个 wire 名；withdraw = queue 策略下排队中撤回）。 */
 public enum class HandleEvent(public val wire: String) {
     PLAY("play"),
     CANCEL_TEARDOWN("cancelTeardown"),
     CANCEL_REVERSE("cancelReverse"),
     REVERSE_DONE("reverseDone"),
     ERROR("error"),
+    WITHDRAW("withdraw"),
 }
 
 /** 收回语义：`TEARDOWN` 瞬时清除（安全优先）| `REVERSE` 反向播放收回（体验优先）。选哪种归 App。 */
@@ -34,6 +35,7 @@ public object HandleFsm {
     public fun transition(state: HandleState, event: HandleEvent): HandleState? = when (state) {
         HandleState.IDLE -> when (event) {
             HandleEvent.PLAY -> HandleState.ACTIVE
+            HandleEvent.WITHDRAW -> HandleState.COMPLETED
             else -> null
         }
         HandleState.ACTIVE -> when (event) {

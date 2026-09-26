@@ -31,7 +31,7 @@ public interface VisualListener {
 public sealed interface PlayResult {
     public data class Started(val handle: VisualHandle) : PlayResult
 
-    /** `QUEUE` 策略下预算不足：handle 停在 idle，预算释放后自动启动；`cancel()` 可撤出队列。 */
+    /** `QUEUE` 策略下预算不足：handle 停在 idle，预算释放后自动启动；`cancel()` 撤出队列（→ completed / WITHDRAWN）。 */
     public data class Queued(val handle: VisualHandle) : PlayResult
 
     /** `DROP_NEWEST` 策略下预算不足 */
@@ -39,7 +39,7 @@ public sealed interface PlayResult {
 }
 
 /** 终态原因。 */
-public enum class EndReason { TEARDOWN, REVERSED, EVICTED, ERROR }
+public enum class EndReason { TEARDOWN, REVERSED, EVICTED, ERROR, WITHDRAWN }
 
 /** 某个 source 在 grid 阶梯各档上的预采样。 */
 public class PreparedSource internal constructor(
@@ -114,10 +114,11 @@ public class VisualEngine(
 
     internal fun cancel(handle: VisualHandle, mode: CancelMode): Boolean {
         if (handle.queued) {
-            // 规格缺口：FSM 无「排队中撤回」转移；撤出队列后句柄停在 idle 且不再可用
+            // 排队中撤回：idle --withdraw--> completed，mode 无意义（尚未渲染过）
             queue.remove(handle)
             handle.queued = false
-            handle.withdrawn = true
+            handle.endReason = EndReason.WITHDRAWN
+            handle.setState(HandleFsm.transition(handle.state, HandleEvent.WITHDRAW)!!)
             return true
         }
         return when (mode) {
@@ -313,7 +314,6 @@ public class VisualHandle internal constructor(
     internal val knobs = TimelineKnobs(request.ir)
     internal val anchorsSorted = request.ir.anchors.sortedBy { it.at }
     internal var queued = false
-    internal var withdrawn = false
     internal var startNanos: Long? = null
     internal var reverseStartNanos: Long? = null
     internal var reverseOriginMs = 0.0

@@ -96,7 +96,9 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 
 ## 7. 句柄状态机
 
-`spec/transitions.json`（5 态 / 4 事件，cancel 按 mode 拆两个 wire 名）。相位与 hold 到期不进状态机。
+`spec/transitions.json`（5 态 / 5 事件，cancel 按 mode 拆两个 wire 名）。相位与 hold 到期不进状态机。
+
+`withdraw`：`queue` 策略下句柄排队时（idle）调 `cancel(任意 mode)` → 撤出队列，idle → completed，`endReason = WITHDRAWN`，照常回调 `onStateChanged(completed)`。
 
 ## 8. 平台层约定
 
@@ -110,11 +112,15 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 
 渲染层允许双端差异（「音色不同，曲子一致」）；纯函数层必须 golden 一致。
 
-## 9. 实现补定项（设计文档未定、实现时拍的口径，待回写 vault）
+## 9. 实现补定项与裁决（2026-09-26 用户拍板）
 
-1. **`holdMs` 语义**：定为 hold 时长。IR SSOT §八 示例 `holdMs: 5000` 却给出 `hold: [600, 5000]`，两者自相矛盾。
-2. **`onHoldExpired` 锚点**：句柄状态机文档称其为 IR 锚点，但 IR SSOT §八 的 anchors 未列出；模板已补。
-3. **轨迹公式**（§5）、**配对规则**（§4）、**采样抖动离散化**：IR SSOT 只给了参数，没有给算法。
-4. **排队中撤回**：`queue` 策略下句柄停在 idle，但 FSM 表里 idle 只接受 play。实现为「`cancel()` 撤出队列，句柄停在 idle 且不再可用」，不走 FSM。
-5. **预算默认值**：`LINEAR_X_FULL = 8000 / ERM_Z = 3000`，**拍的，待真机标定**（边界 §6.4）。
-6. **`impact` 的模型**：原语集登记为 `particleField / transform`，实现要唯一值，暂取 `particleField`（V2 实现前定）。
+设计文档未定 / 矛盾之处，实现时补定，已拍板：
+
+| # | 项 | 裁决 | vault 回写 |
+|---|---|---|---|
+| 1 | `holdMs` 语义（IR SSOT §八 示例 `holdMs: 5000` ↔ `hold: [600, 5000]` 矛盾） | **hold 持续时长**：hold = [600, 600 + holdMs] | IR SSOT §八 示例改 [600, 5600] |
+| 2 | `onHoldExpired` 锚点 | 模板产出 `onHoldExpired @ hold.end`，是 IR 契约字段 | 写回 IR SSOT §七/§八 |
+| 3 | 轨迹公式（§5）、配对规则（§4）、采样抖动离散化 | **权威在本仓库**（本文 + `tools/reference` + golden），vault 只放摘要 + 指针，避免双 SSOT | 不写回 |
+| 4 | `queue` 策略下排队中撤回 | 新增事件 `withdraw`：idle → completed，`endReason = WITHDRAWN`（contract-additive，5 态 5 事件） | 写回句柄状态机 |
+| 5 | `impact` 模型 | **particleField**；画面震动部分由调用方叠加 `shake` 编排（尺子 5） | 写回原语集 |
+| 6 | 预算默认值 `LINEAR_X_FULL = 8000 / ERM_Z = 3000` | 仍是**拍值，待真机标定**（边界 §6.4） | — |

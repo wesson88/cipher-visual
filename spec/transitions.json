@@ -1,11 +1,12 @@
 {
-  "_source": "vault 20-知识/项目记录/CipherLex/动效引擎CipherVisual-句柄状态机-2026-08-05.md §二/§三（v0.1）",
-  "_rule": "5 态 4 事件（cancel 按 mode 拆成 cancelTeardown / cancelReverse 两个 wire 名）。未列出的组合一律非法：拒绝并记日志。相位与 holdExpired 不进状态机",
+  "_source": "vault 20-知识/项目记录/CipherLex/动效引擎CipherVisual-句柄状态机-2026-08-05.md §二/§三（v0.2）",
+  "_rule": "5 态 5 事件（cancel 按 mode 拆成 cancelTeardown / cancelReverse 两个 wire 名；withdraw = queue 策略下排队中撤回，endReason WITHDRAWN）。未列出的组合一律非法：拒绝并记日志。相位与 holdExpired 不进状态机",
   "states": ["idle", "active", "cancelling", "completed", "failed"],
   "terminal": ["completed", "failed"],
-  "events": ["play", "cancelTeardown", "cancelReverse", "reverseDone", "error"],
+  "events": ["play", "cancelTeardown", "cancelReverse", "reverseDone", "error", "withdraw"],
   "transitions": [
     { "from": "idle", "event": "play", "to": "active" },
+    { "from": "idle", "event": "withdraw", "to": "completed" },
     { "from": "active", "event": "cancelTeardown", "to": "completed" },
     { "from": "active", "event": "cancelReverse", "to": "cancelling" },
     { "from": "active", "event": "error", "to": "failed" },

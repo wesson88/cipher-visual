@@ -12,7 +12,8 @@
     "cancelTeardown",
     "cancelReverse",
     "reverseDone",
-    "error"
+    "error",
+    "withdraw"
   ],
   "table": [
     {
@@ -22,7 +23,8 @@
         "cancelTeardown": null,
         "cancelReverse": null,
         "reverseDone": null,
-        "error": null
+        "error": null,
+        "withdraw": "completed"
       }
     },
     {
@@ -32,7 +34,8 @@
         "cancelTeardown": "completed",
         "cancelReverse": "cancelling",
         "reverseDone": null,
-        "error": "failed"
+        "error": "failed",
+        "withdraw": null
       }
     },
     {
@@ -42,7 +45,8 @@
         "cancelTeardown": "completed",
         "cancelReverse": null,
         "reverseDone": "completed",
-        "error": "failed"
+        "error": "failed",
+        "withdraw": null
       }
     },
     {
@@ -52,7 +56,8 @@
         "cancelTeardown": null,
         "cancelReverse": null,
         "reverseDone": null,
-        "error": null
+        "error": null,
+        "withdraw": null
       }
     },
     {
@@ -62,7 +67,8 @@
         "cancelTeardown": null,
         "cancelReverse": null,
         "reverseDone": null,
-        "error": null
+        "error": null,
+        "withdraw": null
       }
     }
   ]

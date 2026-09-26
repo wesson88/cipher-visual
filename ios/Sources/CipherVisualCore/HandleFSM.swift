@@ -7,9 +7,9 @@ public enum HandleState: String, CaseIterable {
     public var isTerminal: Bool { self == .completed || self == .failed }
 }
 
-/// 句柄事件（4 事件；cancel 按 mode 拆成两个 wire 名）。
+/// 句柄事件（5 事件；cancel 按 mode 拆成两个 wire 名；withdraw = queue 策略下排队中撤回）。
 public enum HandleEvent: String, CaseIterable {
-    case play, cancelTeardown, cancelReverse, reverseDone, error
+    case play, cancelTeardown, cancelReverse, reverseDone, error, withdraw
 }
 
 /// `teardown` 瞬时清除（安全优先）| `reverse` 反向播放收回（体验优先）。选哪种归 App。
@@ -23,6 +23,7 @@ public enum HandleFSM {
     public static func transition(_ state: HandleState, _ event: HandleEvent) -> HandleState? {
         switch (state, event) {
         case (.idle, .play): return .active
+        case (.idle, .withdraw): return .completed
         case (.active, .cancelTeardown): return .completed
         case (.active, .cancelReverse): return .cancelling
         case (.active, .error): return .failed

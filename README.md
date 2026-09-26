@@ -12,7 +12,7 @@
 | 其余 11 个原语（burst / fall / … / orbit） | 词典已登记，IR 校验报 `EFFECT_UNSUPPORTED`（V2） |
 | Timeline IR（JSON）解析 + 校验 + 模板 | ✅ |
 | mulberry32 种子协议 · 粒子场 · 轨迹 · 相位 | ✅ golden 对拍 |
-| 句柄 FSM（5 态 4 事件）· teardown / reverse | ✅ |
+| 句柄 FSM（5 态 5 事件）· teardown / reverse | ✅ |
 | 粒子预算 + 5 种打满策略 · 减少动效降级 · `prepare` 预热 | ✅ |
 | Android：Choreographer + Canvas + demo App | ✅ 本地构建 |
 | iOS：CADisplayLink + CoreGraphics | ✅ 已写完，由 CI（macOS）编译和测试 |

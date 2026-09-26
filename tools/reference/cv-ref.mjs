@@ -257,12 +257,12 @@ export function trajectoryFrame(ir, field, t) {
   return { x: xs, y: ys, c: cs };
 }
 
-// ---------------------------------------------------------------- 句柄 FSM（5 态 4 事件）
+// ---------------------------------------------------------------- 句柄 FSM（5 态 5 事件）
 
 export const STATES = ["idle", "active", "cancelling", "completed", "failed"];
-export const EVENTS = ["play", "cancelTeardown", "cancelReverse", "reverseDone", "error"];
+export const EVENTS = ["play", "cancelTeardown", "cancelReverse", "reverseDone", "error", "withdraw"];
 const TABLE = {
-  idle: { play: "active" },
+  idle: { play: "active", withdraw: "completed" }, // withdraw：queue 策略下排队中撤回
   active: { cancelTeardown: "completed", cancelReverse: "cancelling", error: "failed" },
   cancelling: { reverseDone: "completed", cancelTeardown: "completed", error: "failed" },
   completed: {},

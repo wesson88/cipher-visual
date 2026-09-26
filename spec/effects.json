@@ -1,5 +1,5 @@
 {
-  "_source": "vault 20-知识/项目记录/CipherLex/动效引擎CipherVisual-effect原语集-2026-08-05.md §二（v0.1）",
+  "_source": "vault 20-知识/项目记录/CipherLex/动效引擎CipherVisual-effect原语集-2026-08-05.md §二（v0.2）",
   "_rule": "token 是视觉动作类型，不是业务场景；业务场景词（礼物/连击/雨）一律拒收。新增 = contract-additive，改语义 = contract-breaking",
   "models": [
     { "model": "particleField", "desc": "内容采样成粒子，粒子按轨迹运动", "status": "mvp" },
@@ -11,7 +11,7 @@
     { "token": "burst", "desc": "迸发扩散（从中心向外迸发）", "model": "particleField", "status": "v2" },
     { "token": "fall", "desc": "下落（受重力，由上至下）", "model": "particleField", "status": "v2" },
     { "token": "rise", "desc": "上升（由下至上，可漂浮）", "model": "particleField", "status": "v2" },
-    { "token": "impact", "desc": "撞击打击（瞬态冲击）；原语集登记为 particleField / transform，实现前先定唯一模型", "model": "particleField", "status": "v2" },
+    { "token": "impact", "desc": "撞击打击（瞬态冲击）；画面震动部分由调用方叠加 shake 编排", "model": "particleField", "status": "v2" },
     { "token": "fade", "desc": "淡入淡出（透明度）", "model": "transform", "status": "v2" },
     { "token": "slide", "desc": "滑动（位移）", "model": "transform", "status": "v2" },
     { "token": "shake", "desc": "抖动（往返位移）", "model": "transform", "status": "v2" },

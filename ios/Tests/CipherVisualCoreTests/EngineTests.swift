@@ -116,6 +116,19 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(b.state, .active)
     }
 
+    func testQueuedHandleWithdrawCompletes() throws {
+        let clock = ManualClock()
+        let engine = VisualEngine(clock: clock, config: EngineConfig(overflowStrategy: .queue, particleBudget: 40))
+        _ = try engine.play(request())
+        guard case let .queued(b) = try engine.play(request()) else { return XCTFail("expected queued") }
+        XCTAssertTrue(b.cancel(.teardown))
+        XCTAssertEqual(b.state, .completed)
+        XCTAssertEqual(b.endReason, .withdrawn)
+        clock.run(0, 700)
+        XCTAssertEqual(b.state, .completed)
+        XCTAssertFalse(b.cancel(.teardown))
+    }
+
     func testDropNewestAndDropOldest() throws {
         let e1 = VisualEngine(clock: ManualClock(), config: EngineConfig(overflowStrategy: .dropNewest, particleBudget: 40))
         _ = try e1.play(request())

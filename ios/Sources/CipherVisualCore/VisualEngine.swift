@@ -57,7 +57,7 @@ public struct PlayRequest {
 
 public enum PlayResult {
     case started(VisualHandle)
-    /// `queue` 策略下预算不足：handle 停在 idle，预算释放后自动启动；`cancel()` 可撤出队列
+    /// `queue` 策略下预算不足：handle 停在 idle，预算释放后自动启动；`cancel()` 撤出队列（→ completed / withdrawn）
     case queued(VisualHandle)
     /// `dropNewest` 策略下预算不足
     case rejected
@@ -71,7 +71,7 @@ public enum PlayResult {
 }
 
 public enum EndReason {
-    case teardown, reversed, evicted, error
+    case teardown, reversed, evicted, error, withdrawn
 }
 
 public enum RenderInstruction: Equatable {
@@ -143,10 +143,11 @@ public final class VisualEngine {
     @discardableResult
     func cancel(_ handle: VisualHandle, _ mode: CancelMode) -> Bool {
         if handle.queued {
-            // 规格缺口：FSM 无「排队中撤回」转移；撤出后句柄停在 idle 且不再可用
+            // 排队中撤回：idle --withdraw--> completed，mode 无意义（尚未渲染过）
             queue.removeAll { $0 === handle }
             handle.queued = false
-            handle.withdrawn = true
+            handle.endReason = .withdrawn
+            handle.setState(HandleFSM.transition(handle.state, .withdraw)!)
             return true
         }
         switch mode {
@@ -306,7 +307,6 @@ public final class VisualHandle {
     let knobs: TimelineKnobs
     let anchorsSorted: [AnchorSpec]
     var queued = false
-    var withdrawn = false
     var startNanos: UInt64?
     var reverseStartNanos: UInt64?
     var reverseOriginMs = 0.0

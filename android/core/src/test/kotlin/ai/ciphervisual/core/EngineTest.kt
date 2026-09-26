@@ -195,11 +195,16 @@ class EngineTest {
         val clock = ManualClock()
         val engine = VisualEngine(clock, EngineConfig(overflowStrategy = OverflowStrategy.QUEUE, particleBudget = 40))
         engine.play(request())
-        val b = (engine.play(request()) as PlayResult.Queued).handle
-        assertTrue(b.cancel(CancelMode.TEARDOWN))
+        val l = RecordingListener()
+        val b = (engine.play(request(listener = l)) as PlayResult.Queued).handle
+        b.cancel(CancelMode.TEARDOWN).also { assertTrue(it) }
         assertFalse(b.isQueued)
+        assertEquals(HandleState.COMPLETED, b.state)
+        assertEquals(EndReason.WITHDRAWN, b.endReason)
         clock.run(0.0, 700.0)
-        assertEquals(HandleState.IDLE, b.state)
+        assertEquals(HandleState.COMPLETED, b.state, "撤回后不会被队列再启动")
+        assertFalse(b.cancel(CancelMode.TEARDOWN), "终态拒绝后续事件")
+        assertEquals(listOf("state:completed"), l.events, "撤回照常回调终态")
     }
 
     @Test
