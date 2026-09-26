@@ -1,0 +1,60 @@
+{
+  "_generated": "tools/reference/gen-golden.mjs — 禁止手改",
+  "phases": [
+    {
+      "id": "burst",
+      "range": [
+        0,
+        150
+      ]
+    },
+    {
+      "id": "dissolve",
+      "range": [
+        150,
+        350
+      ]
+    },
+    {
+      "id": "resolve",
+      "range": [
+        350,
+        600
+      ]
+    },
+    {
+      "id": "hold",
+      "range": [
+        600,
+        5600
+      ],
+      "mode": "static"
+    }
+  ],
+  "t": [
+    -1,
+    0,
+    149.99,
+    150,
+    349,
+    350,
+    599,
+    600,
+    3000,
+    5600,
+    5600.01
+  ],
+  "phase": [
+    null,
+    "burst",
+    "burst",
+    "dissolve",
+    "dissolve",
+    "resolve",
+    "resolve",
+    "hold",
+    "hold",
+    "hold",
+    null
+  ]
+}

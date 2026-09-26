@@ -1,0 +1,361 @@
+{
+  "_generated": "tools/reference/gen-golden.mjs — 禁止手改",
+  "easing": [
+    {
+      "name": "linear",
+      "p": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "value": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ]
+    },
+    {
+      "name": "cubicIn",
+      "p": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "value": [
+        0,
+        0.0010000000000000002,
+        0.015625,
+        0.125,
+        0.421875,
+        0.7290000000000001,
+        1
+      ]
+    },
+    {
+      "name": "cubicOut",
+      "p": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "value": [
+        0,
+        0.2709999999999999,
+        0.578125,
+        0.875,
+        0.984375,
+        0.999,
+        1
+      ]
+    },
+    {
+      "name": "cubicInOut",
+      "p": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "value": [
+        0,
+        0.004000000000000001,
+        0.0625,
+        0.5,
+        0.9375,
+        0.996,
+        1
+      ]
+    }
+  ],
+  "keyframe": [
+    {
+      "prim": {
+        "type": "keyframe",
+        "times": [
+          0,
+          150,
+          600
+        ],
+        "values": [
+          0,
+          1,
+          0
+        ],
+        "ease": "cubicOut"
+      },
+      "t": [
+        -50,
+        0,
+        50,
+        100,
+        149.5,
+        150,
+        200,
+        299,
+        300,
+        450,
+        599.9,
+        600,
+        1000,
+        5000
+      ],
+      "samples": [
+        {
+          "value": 0,
+          "done": false
+        },
+        {
+          "value": 0,
+          "done": false
+        },
+        {
+          "value": 0.7037037037037036,
+          "done": false
+        },
+        {
+          "value": 0.9629629629629629,
+          "done": false
+        },
+        {
+          "value": 0.999999962962963,
+          "done": false
+        },
+        {
+          "value": 1,
+          "done": false
+        },
+        {
+          "value": 0.7023319615912208,
+          "done": false
+        },
+        {
+          "value": 0.29926914677640604,
+          "done": false
+        },
+        {
+          "value": 0.2962962962962964,
+          "done": false
+        },
+        {
+          "value": 0.03703703703703709,
+          "done": false
+        },
+        {
+          "value": 1.0973888464604897e-11,
+          "done": false
+        },
+        {
+          "value": 0,
+          "done": true
+        },
+        {
+          "value": 0,
+          "done": true
+        },
+        {
+          "value": 0,
+          "done": true
+        }
+      ]
+    },
+    {
+      "prim": {
+        "type": "keyframe",
+        "times": [
+          100,
+          200,
+          300,
+          500
+        ],
+        "values": [
+          2,
+          -1,
+          0.5,
+          0.5
+        ],
+        "ease": "cubicInOut"
+      },
+      "t": [
+        -50,
+        0,
+        50,
+        100,
+        149.5,
+        150,
+        200,
+        299,
+        300,
+        450,
+        599.9,
+        600,
+        1000,
+        5000
+      ],
+      "samples": [
+        {
+          "value": 2,
+          "done": false
+        },
+        {
+          "value": 2,
+          "done": false
+        },
+        {
+          "value": 2,
+          "done": false
+        },
+        {
+          "value": 2,
+          "done": false
+        },
+        {
+          "value": 0.5445515000000001,
+          "done": false
+        },
+        {
+          "value": 0.5,
+          "done": false
+        },
+        {
+          "value": -1,
+          "done": false
+        },
+        {
+          "value": 0.49999400000000005,
+          "done": false
+        },
+        {
+          "value": 0.5,
+          "done": false
+        },
+        {
+          "value": 0.5,
+          "done": false
+        },
+        {
+          "value": 0.5,
+          "done": true
+        },
+        {
+          "value": 0.5,
+          "done": true
+        },
+        {
+          "value": 0.5,
+          "done": true
+        },
+        {
+          "value": 0.5,
+          "done": true
+        }
+      ]
+    },
+    {
+      "prim": {
+        "type": "keyframe",
+        "times": [
+          0,
+          1000
+        ],
+        "values": [
+          10,
+          20
+        ],
+        "ease": "linear"
+      },
+      "t": [
+        -50,
+        0,
+        50,
+        100,
+        149.5,
+        150,
+        200,
+        299,
+        300,
+        450,
+        599.9,
+        600,
+        1000,
+        5000
+      ],
+      "samples": [
+        {
+          "value": 10,
+          "done": false
+        },
+        {
+          "value": 10,
+          "done": false
+        },
+        {
+          "value": 10.5,
+          "done": false
+        },
+        {
+          "value": 11,
+          "done": false
+        },
+        {
+          "value": 11.495,
+          "done": false
+        },
+        {
+          "value": 11.5,
+          "done": false
+        },
+        {
+          "value": 12,
+          "done": false
+        },
+        {
+          "value": 12.99,
+          "done": false
+        },
+        {
+          "value": 13,
+          "done": false
+        },
+        {
+          "value": 14.5,
+          "done": false
+        },
+        {
+          "value": 15.998999999999999,
+          "done": false
+        },
+        {
+          "value": 16,
+          "done": false
+        },
+        {
+          "value": 20,
+          "done": true
+        },
+        {
+          "value": 20,
+          "done": true
+        }
+      ]
+    }
+  ]
+}

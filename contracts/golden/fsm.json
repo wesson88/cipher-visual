@@ -1,0 +1,69 @@
+{
+  "_generated": "tools/reference/gen-golden.mjs — 禁止手改",
+  "states": [
+    "idle",
+    "active",
+    "cancelling",
+    "completed",
+    "failed"
+  ],
+  "events": [
+    "play",
+    "cancelTeardown",
+    "cancelReverse",
+    "reverseDone",
+    "error"
+  ],
+  "table": [
+    {
+      "state": "idle",
+      "next": {
+        "play": "active",
+        "cancelTeardown": null,
+        "cancelReverse": null,
+        "reverseDone": null,
+        "error": null
+      }
+    },
+    {
+      "state": "active",
+      "next": {
+        "play": null,
+        "cancelTeardown": "completed",
+        "cancelReverse": "cancelling",
+        "reverseDone": null,
+        "error": "failed"
+      }
+    },
+    {
+      "state": "cancelling",
+      "next": {
+        "play": null,
+        "cancelTeardown": "completed",
+        "cancelReverse": null,
+        "reverseDone": "completed",
+        "error": "failed"
+      }
+    },
+    {
+      "state": "completed",
+      "next": {
+        "play": null,
+        "cancelTeardown": null,
+        "cancelReverse": null,
+        "reverseDone": null,
+        "error": null
+      }
+    },
+    {
+      "state": "failed",
+      "next": {
+        "play": null,
+        "cancelTeardown": null,
+        "cancelReverse": null,
+        "reverseDone": null,
+        "error": null
+      }
+    }
+  ]
+}
