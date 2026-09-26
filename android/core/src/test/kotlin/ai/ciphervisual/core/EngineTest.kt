@@ -208,6 +208,37 @@ class EngineTest {
     }
 
     @Test
+    fun withdrawReleasesParticleDataAndNotifiesRenderer() {
+        val engine = VisualEngine(ManualClock(), EngineConfig(overflowStrategy = OverflowStrategy.QUEUE, particleBudget = 40))
+        engine.play(request())
+        val b = (engine.play(request()) as PlayResult.Queued).handle
+        assertTrue(b.holdsParticleData, "排队裁决时已预建粒子场")
+        var notified = false
+        b.frameObserver = { notified = b.state.isTerminal }
+        b.cancel(CancelMode.REVERSE)
+        assertFalse(b.holdsParticleData, "撤回后必须释放粒子场")
+        assertEquals(RenderInstruction.None, b.currentRender())
+        assertTrue(notified, "撤回后渲染面必须收到终态通知")
+    }
+
+    @Test
+    fun releaseWithdrawsQueuedHandles() {
+        val clock = ManualClock()
+        val engine = VisualEngine(clock, EngineConfig(overflowStrategy = OverflowStrategy.QUEUE, particleBudget = 40))
+        val a = (engine.play(request()) as PlayResult.Started).handle
+        val l = RecordingListener()
+        val b = (engine.play(request(listener = l)) as PlayResult.Queued).handle
+        engine.release()
+        assertEquals(HandleState.COMPLETED, a.state)
+        assertEquals(HandleState.COMPLETED, b.state)
+        assertEquals(EndReason.WITHDRAWN, b.endReason)
+        assertFalse(b.isQueued)
+        assertFalse(b.holdsParticleData)
+        assertEquals(listOf("state:completed"), l.events)
+        assertFalse(clock.subscribed)
+    }
+
+    @Test
     fun dropNewestRejects() {
         val engine = VisualEngine(ManualClock(), EngineConfig(overflowStrategy = OverflowStrategy.DROP_NEWEST, particleBudget = 40))
         assertIs<PlayResult.Started>(engine.play(request()))

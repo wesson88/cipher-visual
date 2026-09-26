@@ -129,6 +129,35 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(b.cancel(.teardown))
     }
 
+    func testWithdrawReleasesParticleDataAndNotifiesRenderer() throws {
+        let engine = VisualEngine(clock: ManualClock(), config: EngineConfig(overflowStrategy: .queue, particleBudget: 40))
+        _ = try engine.play(request())
+        guard case let .queued(b) = try engine.play(request()) else { return XCTFail("expected queued") }
+        XCTAssertTrue(b.holdsParticleData, "排队裁决时已预建粒子场")
+        var notified = false
+        b.frameObserver = { notified = b.state.isTerminal }
+        b.cancel(.reverse)
+        XCTAssertFalse(b.holdsParticleData, "撤回后必须释放粒子场")
+        XCTAssertEqual(b.currentRender(), RenderInstruction.none)
+        XCTAssertTrue(notified, "撤回后渲染面必须收到终态通知")
+    }
+
+    func testReleaseWithdrawsQueuedHandles() throws {
+        let clock = ManualClock()
+        let engine = VisualEngine(clock: clock, config: EngineConfig(overflowStrategy: .queue, particleBudget: 40))
+        let a = try engine.play(request()).handle!
+        let l = Recorder()
+        guard case let .queued(b) = try engine.play(request(listener: l)) else { return XCTFail("expected queued") }
+        engine.release()
+        XCTAssertEqual(a.state, .completed)
+        XCTAssertEqual(b.state, .completed)
+        XCTAssertEqual(b.endReason, .withdrawn)
+        XCTAssertFalse(b.isQueued)
+        XCTAssertFalse(b.holdsParticleData)
+        XCTAssertEqual(l.events, ["state:completed"])
+        XCTAssertFalse(clock.subscribed)
+    }
+
     func testDropNewestAndDropOldest() throws {
         let e1 = VisualEngine(clock: ManualClock(), config: EngineConfig(overflowStrategy: .dropNewest, particleBudget: 40))
         _ = try e1.play(request())

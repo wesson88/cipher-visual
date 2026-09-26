@@ -329,6 +329,9 @@ public class VisualHandle internal constructor(
     private var instruction: RenderInstruction = RenderInstruction.None
     private var lastNotified: RenderInstruction? = null
 
+    /** 测试钩子：是否仍持有任何粒子场（终态后必须为 false——库渲染完不留副本）。 */
+    internal val holdsParticleData: Boolean get() = particleField != null || fieldCache.any { it != null }
+
     internal fun fieldAt(level: Int): ParticleField =
         fieldCache[level] ?: ParticleField.build(engine.ladderSource(this, level), request.target).also { fieldCache[level] = it }
 
