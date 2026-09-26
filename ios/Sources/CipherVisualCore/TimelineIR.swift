@@ -200,6 +200,10 @@ public enum IRError: String, CaseIterable, Error {
 
 public struct IRInvalid: Error {
     public let errors: Set<IRError>
+
+    public init(errors: Set<IRError>) {
+        self.errors = errors
+    }
 }
 
 public enum IRValidator {

@@ -35,4 +35,11 @@ jobs:
       - name: 纯逻辑单测（macOS 主机，含 golden 对拍）
         run: swift test
       - name: UIKit 层编译（iOS 模拟器 SDK）
-        run: xcodebuild build -scheme CipherVisual-Package -destination 'generic/platform=iOS Simulator' -quiet
+        # 编译错误转成 annotation（公开仓库的 job 日志需鉴权才能读，annotation 不需要）
+        run: |
+          xcodebuild -list
+          xcodebuild build -scheme CipherVisual-Package -destination 'generic/platform=iOS Simulator' > build.log 2>&1 || true
+          grep -E ": error: " build.log | sort -u | sed -E 's/^([^:]+):([0-9]+):[0-9]+: error: (.*)$/::error file=\1,line=\2::\3/' || true
+          grep -E "xcodebuild: error" build.log | sed -E 's/^/::error::/' || true
+          tail -20 build.log
+          grep -q "BUILD SUCCEEDED" build.log
