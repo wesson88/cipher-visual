@@ -97,12 +97,16 @@ final class EngineFuzzTests: XCTestCase {
                     expect(h.currentRender() == RenderInstruction.none, "\(at) 终态渲染指令非 none")
                     expect(t.notifiedAfterTerminal, "\(at) 终态未通知渲染面")
                 }
+                if h.state == .active && h.currentRender() == .staticTarget {
+                    expect(!h.holdsParticleData, "\(at) 停在最终画面仍持粒子场")
+                }
                 if h.state == .idle {
                     expect(h.isQueued || h.isAwaitingHandoff, "\(at) idle 但既不排队也不等交接（僵尸）")
                     expect(!active.contains { $0 === h }, "\(at) 未启动句柄出现在运行列表")
                 }
             }
             for h in active { expect(h.state == .active || h.state == .cancelling, "运行列表含 \(h.state)") }
+            if bounded { expect(engine.particleUsage <= budget, "占用 \(engine.particleUsage) > 预算 \(budget)") }
             for slot in slots {
                 let n = tracked.filter { $0.slot == slot && $0.handle.state == .active }.count
                 expect(n <= 1, "\(slot) 上同时有 \(n) 个 active")

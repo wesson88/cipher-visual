@@ -191,7 +191,8 @@ public final class VisualEngine {
             return true
         case .reverse:
             guard HandleFSM.transition(handle.state, .cancelReverse) != nil else { return false }
-            startReverse(handle, .reversed)
+            // 预算放不下重建时降为 teardown：腾出的预算可能放行排队者
+            if !beginReverse(handle, .reversed) { drainQueue() }
             updateSubscription()
             return true
         }
@@ -268,8 +269,31 @@ public final class VisualEngine {
         } else if mode == .teardown {
             teardown(h, reason)
         } else if h.state == .active {
-            startReverse(h, reason)
+            _ = beginReverse(h, reason)
         }
+    }
+
+    /// 发起 reverse。静态停留时粒子场已释放，须重建并过裁决：按 grid 阶梯取第一档放得下的（与打满策略无关）；
+    /// 最粗一档仍放不下降为 teardown（主动收回记 teardown 而非 reversed，App 可分辨）。镜像 Android `beginReverse`。
+    /// - Returns: true = 进入倒放；false = 已降为 teardown（句柄已终态）
+    private func beginReverse(_ h: VisualHandle, _ reason: EndReason) -> Bool {
+        if !h.request.reducedMotion && !h.hasParticles {
+            guard let level = reverseLevel(h) else {
+                teardown(h, reason == .reversed ? .teardown : reason)
+                return false
+            }
+            h.adopt(level)
+        }
+        startReverse(h, reason)
+        return true
+    }
+
+    private func reverseLevel(_ h: VisualHandle) -> Int? {
+        let usage = particleUsage
+        for level in 0..<Admission.ladderSteps where usage + h.fieldAt(level).count <= config.particleBudget {
+            return level
+        }
+        return nil
     }
 
     private func startReverse(_ h: VisualHandle, _ reason: EndReason) {
@@ -518,6 +542,8 @@ public final class VisualHandle {
         if request.reducedMotion {
             instruction = .crossfade(targetAlpha: Float(knobs.morphAt(t)))
         } else if state == .active && t >= knobs.morphEnd && knobs.holdMode == .static {
+            // 已停在最终画面：只需画 target，粒子场主动释放（reverse 时按需重建并重新过预算裁决）
+            releaseParticles()
             instruction = .staticTarget
         } else if let f = particleField {
             evaluator.fill(f, t, into: frame)
@@ -531,6 +557,15 @@ public final class VisualHandle {
         if case .particles = cur {} else if cur == lastNotified { return }
         lastNotified = cur
         frameObserver?()
+    }
+
+    /// 当前是否持有可直接倒放的粒子场（静态停留后为 false）
+    var hasParticles: Bool { particleField != nil }
+
+    private func releaseParticles() {
+        guard particleField != nil else { return }
+        particleField = nil
+        frame.clear()
     }
 
     func releaseResources() {

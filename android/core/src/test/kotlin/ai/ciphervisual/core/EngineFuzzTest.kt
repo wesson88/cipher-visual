@@ -16,7 +16,9 @@ import kotlin.test.fail
  * 3. idle ⇔ 排队中或等交接；运行列表里只有 active / cancelling；
  * 4. 同一渲染位上任意时刻至多一个 active（最新的取消前一次）；
  * 5. 取消交接：同位句柄进入 active 时，同位更早的句柄必须都已终态（前一次回调之后才发起最新的）；
- * 6. 预算：queue / dropNewest / dropOldest 下，任何句柄被放行（→ active）的那一刻占用 ≤ 预算；
+ * 6. 预算：queue / dropNewest / dropOldest 下，任何句柄被放行（→ active）的那一刻、以及每一步之后占用 ≤ 预算
+ *    （静态停留释放粒子、reverse 重建过裁决后，不再有绕过裁决的计费路径）；
+ * 6b. 停在最终画面（StaticTarget）的句柄不持粒子场；
  * 7. 活性：清空运行句柄后不会有句柄卡在 idle；
  * 8. release() 之后所有句柄终态、帧时钟已退订。
  *
@@ -98,6 +100,9 @@ class EngineFuzzTest {
                     assertEquals(RenderInstruction.None, h.currentRender(), "$where 终态渲染指令非 None")
                     assertTrue(t.notifiedAfterTerminal, "$where 终态未通知渲染面")
                 }
+                if (h.state == HandleState.ACTIVE && h.currentRender() == RenderInstruction.StaticTarget) {
+                    assertFalse(h.holdsParticleData, "$where 停在最终画面仍持粒子场")
+                }
                 if (h.state == HandleState.IDLE) {
                     assertTrue(h.isQueued || h.isAwaitingHandoff, "$where idle 但既不排队也不等交接（僵尸）")
                     assertFalse(h in active, "$where 未启动句柄出现在运行列表")
@@ -106,6 +111,7 @@ class EngineFuzzTest {
             for (h in active) {
                 assertTrue(h.state == HandleState.ACTIVE || h.state == HandleState.CANCELLING, "$ctx step=$step 运行列表含 ${h.state}")
             }
+            if (bounded) assertTrue(engine.particleUsage <= budget, "$ctx step=$step 占用 ${engine.particleUsage} > 预算 $budget${traced()}")
             for (slot in slots) {
                 val n = tracked.count { it.slot == slot && it.handle.state == HandleState.ACTIVE }
                 assertTrue(n <= 1, "$ctx step=$step $slot 上同时有 $n 个 active")

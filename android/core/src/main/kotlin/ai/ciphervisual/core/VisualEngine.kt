@@ -169,7 +169,8 @@ public class VisualEngine(
             }
             CancelMode.REVERSE -> {
                 if (HandleFsm.transition(handle.state, HandleEvent.CANCEL_REVERSE) == null) return false
-                startReverse(handle, EndReason.REVERSED)
+                // 预算放不下重建时降为 teardown：腾出的预算可能放行排队者
+                if (!beginReverse(handle, EndReason.REVERSED)) drainQueue()
                 updateSubscription()
                 true
             }
@@ -257,9 +258,44 @@ public class VisualEngine(
         when {
             h.state == HandleState.IDLE -> withdraw(h, reason)
             mode == CancelMode.TEARDOWN -> teardown(h, reason)
-            h.state == HandleState.ACTIVE -> startReverse(h, reason)
+            h.state == HandleState.ACTIVE -> beginReverse(h, reason)
             else -> Unit
         }
+    }
+
+    /**
+     * 发起 reverse。静态停留时粒子场已释放，须重建——重建和新请求一样占预算，所以要过裁决：
+     * 按 grid 阶梯（grid, 2·grid, 4·grid）取第一档放得下的（收回动画画质不重要，与打满策略无关）；
+     * 最粗一档仍放不下就降为 teardown 瞬时收回（主动收回的 endReason 记 TEARDOWN 而非 REVERSED，App 可分辨）。
+     * 种子协议保证重建出的粒子场与原来逐位一致，倒放画面不变。
+     *
+     * @return true = 进入倒放；false = 已降为 teardown（句柄已终态）
+     */
+    private fun beginReverse(h: VisualHandle, reason: EndReason): Boolean {
+        if (!h.request.reducedMotion && !h.hasParticles) {
+            val level = reverseLevel(h)
+            if (level == null) {
+                teardown(h, if (reason == EndReason.REVERSED) EndReason.TEARDOWN else reason)
+                return false
+            }
+            h.adopt(level)
+        }
+        startReverse(h, reason)
+        return true
+    }
+
+    private fun reverseLevel(h: VisualHandle): Int? {
+        val usage = particleUsage
+        for (level in 0 until Admission.LADDER_STEPS) {
+            // 内容已被宿主提前回收等读像素失败：不能倒放，按放不下处理
+            val cost = try {
+                h.fieldAt(level).size
+            } catch (e: RuntimeException) {
+                return null
+            }
+            if (usage + cost <= config.particleBudget) return level
+        }
+        return null
     }
 
     private fun startReverse(h: VisualHandle, reason: EndReason) {
@@ -509,8 +545,11 @@ public class VisualHandle internal constructor(
         val t = timeMs
         instruction = when {
             request.reducedMotion -> RenderInstruction.Crossfade(knobs.morphAt(t).toFloat())
-            state == HandleState.ACTIVE && t >= knobs.morphEnd && knobs.holdMode == HoldMode.STATIC ->
+            state == HandleState.ACTIVE && t >= knobs.morphEnd && knobs.holdMode == HoldMode.STATIC -> {
+                // 已停在最终画面：只需画 target，粒子场主动释放（reverse 时按需重建并重新过预算裁决）
+                releaseParticles()
                 RenderInstruction.StaticTarget
+            }
             else -> {
                 val f = particleField ?: return
                 evaluator.fill(f, t, frame)
@@ -525,6 +564,15 @@ public class VisualHandle internal constructor(
         if (cur !is RenderInstruction.Particles && cur == lastNotified) return
         lastNotified = cur
         frameObserver?.invoke()
+    }
+
+    /** 当前是否持有可直接倒放的粒子场（静态停留后为 false）。 */
+    internal val hasParticles: Boolean get() = particleField != null
+
+    private fun releaseParticles() {
+        if (particleField == null) return
+        particleField = null
+        frame.clear()
     }
 
     internal fun releaseResources() {
