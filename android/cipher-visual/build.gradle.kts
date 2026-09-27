@@ -17,6 +17,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        // android.jar 桩方法返回默认值而非抛错；需要行为的 Android 类用 mockk 打桩
+        unitTests.isReturnDefaultValues = true
+        unitTests.all { it.useJUnitPlatform() }
+    }
     kotlin {
         explicitApi()
         compilerOptions {
@@ -28,4 +33,8 @@ android {
 dependencies {
     api(project(":core"))
     implementation(libs.androidx.annotation)
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.kotlin.test)
+    testImplementation(libs.mockk)
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

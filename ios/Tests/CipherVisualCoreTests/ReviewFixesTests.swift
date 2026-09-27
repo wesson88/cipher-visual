@@ -71,7 +71,7 @@ final class ReviewFixesTests: XCTestCase {
         }
         let canceller = Canceller()
         var released: [String] = []
-        let slot = RenderSlot<String>(onRelease: { released.append($0) }, onChanged: {})
+        let slot = RenderSlot<String>(onRelease: { released.append($0) }, onLayoutChanged: {})
         let engine = VisualEngine(clock: ManualClock())
         guard case let .started(h) = try engine.play(req(listener: canceller, slot: "v")) else { return XCTFail("expected started") }
         XCTAssertTrue(h.state.isTerminal)
@@ -89,7 +89,7 @@ final class RenderSlotTests: XCTestCase {
 
     func testReverseHandoffKeepsRenderingPreviousUntilItEnds() throws {
         var released: [String] = []
-        let slot = RenderSlot<String>(onRelease: { released.append($0) }, onChanged: {})
+        let slot = RenderSlot<String>(onRelease: { released.append($0) }, onLayoutChanged: {})
         let clock = ManualClock()
         let engine = VisualEngine(clock: clock)
         let a = try engine.play(req()).handle!
@@ -106,7 +106,7 @@ final class RenderSlotTests: XCTestCase {
 
     func testReplacedPendingIsReleasedExactlyOnce() throws {
         var released: [String] = []
-        let slot = RenderSlot<String>(onRelease: { released.append($0) }, onChanged: {})
+        let slot = RenderSlot<String>(onRelease: { released.append($0) }, onLayoutChanged: {})
         let clock = ManualClock()
         let engine = VisualEngine(clock: clock)
         slot.attach(try engine.play(req()).handle!, "A")

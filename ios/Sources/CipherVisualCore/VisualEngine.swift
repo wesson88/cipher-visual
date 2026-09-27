@@ -119,7 +119,10 @@ public final class VisualEngine {
     private var releasing = false
     private var nextQueueSeq: Int64 = 0
     private var nextId: Int64 = 1
-    private var subscribed = false
+    /// 帧订阅：none / immediate（下一帧）/ delayed（画面静止，只等下一个锚点）
+    private enum Sub { case none, immediate, delayed }
+    private var sub = Sub.none
+    private var settlingFrame = false
     private lazy var frameCallback = FrameCallback { [weak self] nanos in self?.onFrame(nanos) }
 
     public init(clock: FrameClock, config: EngineConfig = EngineConfig()) {
@@ -164,13 +167,16 @@ public final class VisualEngine {
     /// 销毁：撤回全部未启动句柄、teardown 全部运行句柄、退订帧时钟。
     public func release() {
         releasing = true
+        defer {
+            // 与 Android 的 try/finally 同构：无论如何都不能让引擎卡在 releasing
+            slotMembers.removeAll()
+            releasing = false
+            updateSubscription()
+        }
         var pending: [VisualHandle] = queue
         for h in running.flatMap({ $0.waiters }) where !pending.contains(where: { $0 === h }) { pending.append(h) }
         for h in pending { withdraw(h, .withdrawn) }
         for h in running { teardown(h, .teardown) }
-        slotMembers.removeAll()
-        releasing = false
-        updateSubscription()
     }
 
     // MARK: 句柄控制
@@ -211,6 +217,10 @@ public final class VisualEngine {
 
     /// - Parameter ahead: 排在它前面的排队数（新请求 / 交接后放行 = 当前队长；队头出队 = 0）
     private func decide(_ handle: VisualHandle, ahead: Int) -> AdmissionDecision {
+        // 等交接 / 排队期间宿主可能已释放内容（view.detach）：不可读就拒绝，不去建空粒子场（双端同口径）
+        guard handle.request.source.isAvailable, handle.request.target.isAvailable else {
+            return .reject(.contentUnavailable)
+        }
         let costs = running.map { RunningCost(id: $0.id, cost: $0.cost()) }
         if handle.request.reducedMotion {
             return Admission.decide(config.overflowStrategy, budget: config.particleBudget, running: costs, ladderCosts: [0], queued: ahead)
@@ -235,7 +245,10 @@ public final class VisualEngine {
                 preempt(victim, handle.request.preemptMode, .evicted)
                 if !victim.state.isTerminal { handle.awaitHandoff(victim) }
             }
-            if !handle.awaiting.isEmpty { return .queued(handle) }
+            if !handle.awaiting.isEmpty {
+                handle.dropFieldCache() // 等交接期间不持粒子场，放行时重建
+                return .queued(handle)
+            }
             // 挤占触发的 finish 会级联放行等交接的句柄，可能已吃掉腾出的预算：重新裁决
             if !evict.isEmpty { return admitOrWait(handle, announced: announced) }
             start(handle, level)
@@ -245,6 +258,7 @@ public final class VisualEngine {
             handle.queueSeq = nextQueueSeq
             nextQueueSeq += 1
             queue.append(handle)
+            handle.dropFieldCache() // 排队期间不持粒子场（只为判超总预算才建的），出队时重建
             return .queued(handle)
         case let .reject(reason):
             handle.rejectReason = reason
@@ -293,6 +307,8 @@ public final class VisualEngine {
     }
 
     private func reverseLevel(_ h: VisualHandle) -> Int? {
+        // 内容已被宿主释放：不能重建倒放，按放不下处理（降为 teardown）
+        guard h.request.source.isAvailable, h.request.target.isAvailable else { return nil }
         let usage = particleUsage
         for level in 0..<Admission.ladderSteps where usage + h.fieldAt(level).count <= config.particleBudget {
             return level
@@ -352,29 +368,48 @@ public final class VisualEngine {
                 head.rejectReason = reason
                 withdraw(head, .rejected)
             case .queue:
+                head.dropFieldCache()
                 return
             }
         }
     }
 
+    /// 帧订阅三态，镜像 Android：有句柄在动 → 下一帧；全静止只等锚点 → 一次延时回调；都没有 → 退订。
+    /// 延时量只在一帧结束时计算；帧外的状态变化不知道「现在」，先要一帧再算。
     private func updateSubscription() {
-        let need = running.contains { $0.needsFrames() }
-        if need && !subscribed {
-            clock.postFrameCallback(frameCallback)
-            subscribed = true
-        } else if !need && subscribed {
+        let animating = running.contains { $0.isAnimating() }
+        let waitMs = animating ? nil : running.compactMap { $0.msUntilNextAnchor() }.min()
+        if animating {
+            if sub != .immediate {
+                if sub == .delayed { clock.removeFrameCallback(frameCallback) }
+                clock.postFrameCallback(frameCallback)
+                sub = .immediate
+            }
+        } else if let wait = waitMs {
+            if sub == .none {
+                if settlingFrame {
+                    clock.postFrameCallback(frameCallback, delayMs: wait.rounded(.up))
+                    sub = .delayed
+                } else {
+                    clock.postFrameCallback(frameCallback)
+                    sub = .immediate
+                }
+            }
+        } else if sub != .none {
             clock.removeFrameCallback(frameCallback)
-            subscribed = false
+            sub = .none
         }
     }
 
     private func onFrame(_ nanos: UInt64) {
-        subscribed = false
+        sub = .none
         for h in running {
             if h.state == .active { advanceActive(h, nanos) }
             if h.state == .cancelling { advanceReverse(h, nanos) }
         }
         drainQueue()
+        settlingFrame = true
+        defer { settlingFrame = false }
         updateSubscription()
     }
 
@@ -532,15 +567,24 @@ public final class VisualHandle {
         }
     }
 
-    func needsFrames() -> Bool {
+    /// 画面在动：需要逐帧推进
+    func isAnimating() -> Bool {
         switch state {
         case .cancelling: return true
-        case .active:
-            return timeMs < knobs.morphEnd
-                || (knobs.holdMode == .jitter && !request.reducedMotion)
-                || anchorsSorted.contains { $0.at > timeMs }
+        case .active: return timeMs < knobs.morphEnd || (knobs.holdMode == .jitter && !request.reducedMotion)
         default: return false
         }
+    }
+
+    /// 画面静止时距下一个锚点还有多久（ms）；没有待发锚点返回 nil
+    func msUntilNextAnchor() -> Double? {
+        guard state == .active, let next = anchorsSorted.first(where: { $0.at > timeMs }) else { return nil }
+        return next.at - timeMs
+    }
+
+    /// 未启动期间不持粒子场（排队 / 等交接），放行时重建
+    func dropFieldCache() {
+        fieldCache = Array(repeating: nil, count: Admission.ladderSteps)
     }
 
     func render() {

@@ -2,7 +2,7 @@ import XCTest
 @testable import CipherVisualCore
 
 /// 引擎不变式 fuzz，镜像 Android `EngineFuzzTest`（断言清单见那边的类注释）。随机源用 Mulberry32，失败信息带 seed 与操作轨迹。
-/// 与 Android 的差异：iOS 像素源回收后读到 0 而非抛错（`ResolvedContent.releasePixels` 口径），「detach 后启动」路径不抛异常。
+/// 可回收像素源通过 `isAvailable` 声明不可读（与 Android 同口径），引擎据此拒绝；监听器抛异常一项 iOS 不适用（协议方法不 throws）。
 final class EngineFuzzTests: XCTestCase {
     private final class Tracked {
         let handle: VisualHandle
@@ -26,6 +26,7 @@ final class EngineFuzzTests: XCTestCase {
         let width: Int
         let height = 12
         var recycled = false
+        var isAvailable: Bool { !recycled }
         init(_ w: Int) { width = w }
         func argb(x: Int, y: Int) -> UInt32 { recycled ? 0 : 0xFF22_3344 }
     }
@@ -33,6 +34,9 @@ final class EngineFuzzTests: XCTestCase {
     private final class Recorder: VisualListener {
         var byId: [Int64: Tracked] = [:]
         var cancelOnActive: Set<Int64> = []
+        var anchorsFired = 0
+
+        func onAnchor(_ handle: VisualHandle, anchorId: String) { anchorsFired += 1 }
         var trace: [String] = []
         var onActivated: ((Tracked) -> Void)?
 
@@ -91,7 +95,7 @@ final class EngineFuzzTests: XCTestCase {
                     p.tgt.recycled = true
                     rec.byId[p.id]?.releaseCount += 1
                 },
-                onChanged: {}
+                onLayoutChanged: {}
             )
         }
 
@@ -142,6 +146,7 @@ final class EngineFuzzTests: XCTestCase {
                     expect(!h.holdsParticleData, "\(at) 停在最终画面仍持粒子场")
                 }
                 if h.state == .idle {
+                    expect(!h.holdsParticleData, "\(at) 未启动却持有粒子场")
                     expect(h.isQueued || h.isAwaitingHandoff, "\(at) idle 但既不排队也不等交接（僵尸）")
                     expect(!active.contains { $0 === h }, "\(at) 未启动句柄出现在运行列表")
                 }
@@ -237,6 +242,24 @@ final class EngineFuzzTests: XCTestCase {
             now += 16
             clock.frame(now)
             guard check("drain#\(rounds)") else { return }
+        }
+
+        // 静默期：先推一帧让订阅按准确时刻落定；若无句柄在动，接下来 3 秒的唤醒只应来自锚点到期
+        now += 16
+        clock.frame(now)
+        if !engine.activeHandles.contains(where: { $0.isAnimating() }) {
+            let deliveredBefore = clock.delivered
+            let anchorsBefore = rec.anchorsFired
+            var q = now
+            while q <= now + 3000 {
+                q += 1000.0 / 60
+                clock.frame(q)
+            }
+            now = q
+            let wakes = clock.delivered - deliveredBefore
+            let fired = rec.anchorsFired - anchorsBefore
+            XCTAssertLessThanOrEqual(wakes, fired + 1, "\(ctx) 静默期空转：唤醒 \(wakes) 次，只触发了 \(fired) 个锚点")
+            guard check("quiet") else { return }
         }
 
         for _ in 0..<8 { try play() }

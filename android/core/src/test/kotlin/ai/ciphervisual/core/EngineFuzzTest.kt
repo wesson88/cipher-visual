@@ -20,10 +20,15 @@ import kotlin.test.fail
  * 6. QUEUE 严格 FIFO：放行时不存在入队更早（或从未入队却插在排队者前面）的仍在排队的句柄；
  * 7. 畸形 IR 只以 IrInvalidException 被拒；
  * 8. 活性：清空运行句柄后不会有句柄卡在 idle；release() 后全部终态、帧时钟已退订。
+ * 9. 未启动（idle）的句柄不持粒子场；
+ * 10. 监听器在 play 的 active 回调里抛异常：调用方拿到异常，运行列表里不留未登记的幽灵句柄；
+ * 11. 静默期（无句柄在动）不逐帧空转：唤醒次数 ≤ 期间触发的锚点数 + 1。
  *
  * 失败信息带 seed 与最近 40 步操作轨迹。
  */
 class EngineFuzzTest {
+    private class FuzzBoom : RuntimeException("fuzz listener boom")
+
     private class Tracked(val handle: VisualHandle, val slot: String?, val seq: Int) {
         var lastState = HandleState.IDLE
         var notifiedAfterTerminal = false
@@ -48,6 +53,8 @@ class EngineFuzzTest {
         val tracked = ArrayList<Tracked>()
         val byHandle = HashMap<VisualHandle, Tracked>()
         val cancelOnActive = HashSet<VisualHandle>()
+        var throwOnNextUntrackedActive = false
+        var anchorsFired = 0
         var now = 0.0
         var seq = 0
         val ctx = "seed=$seed strategy=${strategy.wire} budget=$budget"
@@ -67,13 +74,22 @@ class EngineFuzzTest {
                     p.tgt.recycled = true
                     byHandle[p.handle]?.let { t -> t.releaseCount++ }
                 },
-                onChanged = {},
+                onLayoutChanged = {},
             )
         }
 
         val listener = object : VisualListener {
+            override fun onAnchor(handle: VisualHandle, anchorId: String) {
+                anchorsFired++
+            }
+
             override fun onStateChanged(handle: VisualHandle, state: HandleState) {
                 log("  cb h${handle.id} → ${state.wire} (${handle.endReason ?: ""})")
+                if (state == HandleState.ACTIVE && throwOnNextUntrackedActive && byHandle[handle] == null) {
+                    throwOnNextUntrackedActive = false
+                    log("  (监听器在 active 回调里抛异常 h${handle.id})")
+                    throw FuzzBoom()
+                }
                 val t = byHandle[handle]
                 if (t != null) {
                     if (t.lastState.isTerminal) t.violations += "终态 ${t.lastState.wire} 之后又回调 ${state.wire}"
@@ -128,12 +144,14 @@ class EngineFuzzTest {
                     assertFalse(h.holdsParticleData, "$where 停在最终画面仍持粒子场")
                 }
                 if (h.state == HandleState.IDLE) {
+                    assertFalse(h.holdsParticleData, "$where 未启动却持有粒子场")
                     assertTrue(h.isQueued || h.isAwaitingHandoff, "$where idle 但既不排队也不等交接（僵尸）")
                     assertFalse(h in active, "$where 未启动句柄出现在运行列表")
                 }
             }
             for (h in active) {
                 assertTrue(h.state == HandleState.ACTIVE || h.state == HandleState.CANCELLING, "$ctx step=$step 运行列表含 ${h.state}")
+                assertTrue(h in byHandle, "$ctx step=$step 运行列表里有未登记的幽灵句柄 h${h.id}${traced()}")
             }
             if (bounded) assertTrue(engine.particleUsage <= budget, "$ctx step=$step 占用 ${engine.particleUsage} > 预算 $budget${traced()}")
             for (slot in slotNames) {
@@ -150,18 +168,24 @@ class EngineFuzzTest {
             val src = RecyclablePixels(8 * (1 + r(5)), 12)
             val tgt = RecyclablePixels(8 * (1 + r(5)), 12)
             val cancelFast = r(10) == 0
+            val throwing = r(15) == 0
             val req = PlayRequest(
                 ir, src, tgt, listener,
                 reducedMotion = r(8) == 0,
                 slot = slot,
                 preemptMode = if (r(2) == 0) CancelMode.TEARDOWN else CancelMode.REVERSE,
             )
-            log("play slot=$slot mode=${req.preemptMode} malformed=$malformed cancelOnActive=$cancelFast")
+            log("play slot=$slot mode=${req.preemptMode} malformed=$malformed cancelOnActive=$cancelFast throwing=$throwing")
+            throwOnNextUntrackedActive = throwing
             val res = try {
                 engine.play(req)
             } catch (e: IrInvalidException) {
                 assertTrue(malformed, "$ctx 合法 IR 被拒：${e.errors}")
                 return
+            } catch (e: FuzzBoom) {
+                return // 句柄从未交给调用方；幽灵检查在 check() 里
+            } finally {
+                throwOnNextUntrackedActive = false
             }
             assertFalse(malformed, "$ctx 畸形 IR 未被拒")
             val h = when (res) {
@@ -230,6 +254,24 @@ class EngineFuzzTest {
             now += 16
             clock.frame(now)
             check("drain#$rounds")
+        }
+
+        // 静默期：先推一帧让订阅按准确时刻落定；若此时无句柄在动，接下来 3 秒的唤醒次数应只来自锚点到期
+        now += 16
+        clock.frame(now)
+        if (engine.activeHandles.none { it.isAnimating() }) {
+            val deliveredBefore = clock.delivered
+            val anchorsBefore = anchorsFired
+            var q = now
+            while (q <= now + 3000) {
+                q += 1000.0 / 60
+                clock.frame(q)
+            }
+            now = q
+            val wakes = clock.delivered - deliveredBefore
+            val fired = anchorsFired - anchorsBefore
+            assertTrue(wakes <= fired + 1, "$ctx 静默期空转：唤醒 $wakes 次，只触发了 $fired 个锚点${traced()}")
+            check("quiet")
         }
 
         repeat(8) { play() }

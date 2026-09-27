@@ -8,8 +8,21 @@ import UIKit
 public final class DisplayLinkFrameClock: FrameClock {
     private var link: CADisplayLink?
     private var callbacks: [FrameCallback] = []
+    /// 延时回调：到期后转为普通帧回调（下一个 vsync 投递）；remove 时一并撤销
+    private var delayed: [ObjectIdentifier: DispatchWorkItem] = [:]
 
     public init() {}
+
+    public func postFrameCallback(_ callback: FrameCallback, delayMs: Double) {
+        let key = ObjectIdentifier(callback)
+        delayed[key]?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.delayed[key] = nil
+            self?.postFrameCallback(callback)
+        }
+        delayed[key] = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(delayMs, 0) / 1000, execute: item)
+    }
 
     public func postFrameCallback(_ callback: FrameCallback) {
         callbacks.append(callback)
@@ -22,6 +35,7 @@ public final class DisplayLinkFrameClock: FrameClock {
     }
 
     public func removeFrameCallback(_ callback: FrameCallback) {
+        delayed.removeValue(forKey: ObjectIdentifier(callback))?.cancel()
         callbacks.removeAll { $0 === callback }
         if callbacks.isEmpty { link?.isPaused = true }
     }
@@ -105,6 +119,9 @@ public final class ResolvedContent: PixelSource {
         buffer = buf
     }
 
+    /// 像素缓冲已释放（view.detach / 句柄终态）后不可读：引擎据此拒绝而不是建空粒子场
+    public var isAvailable: Bool { !buffer.isEmpty }
+
     /// 与 Android `Bitmap.getPixel` 同口径：返回非预乘 ARGB。
     public func argb(x: Int, y: Int) -> UInt32 {
         guard !buffer.isEmpty else { return 0 }
@@ -178,14 +195,18 @@ public final class CipherVisualView: UIView {
             c.source.releasePixels()
             c.target.releasePixels()
         },
-        onChanged: { [weak self] in
+        // 只在正在渲染的内容变了时重算尺寸；逐帧只重绘
+        onLayoutChanged: { [weak self] in
             self?.invalidateIntrinsicContentSize()
             self?.setNeedsDisplay()
-        }
+        },
+        onRedraw: { [weak self] in self?.setNeedsDisplay() }
     )
 
     /// 最新挂上的句柄（可能仍在等交接，也可能已终态）
     public var attachedHandle: VisualHandle? { slot.latestHandle }
+    /// 正在渲染的句柄（交接期间是还在倒放的前一次）
+    public var renderingHandle: VisualHandle? { slot.currentHandle }
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -210,7 +231,8 @@ public final class CipherVisualView: UIView {
     }
 
     public override var intrinsicContentSize: CGSize {
-        guard let c = slot.latestPayload else { return .zero }
+        // 正在渲染的优先：交接期间前一次还在倒放，尺寸不能提前跳到新内容
+        guard let c = slot.layoutPayload else { return .zero }
         let s = c.target.scale
         return CGSize(width: CGFloat(max(c.source.width, c.target.width)) / s,
                       height: CGFloat(max(c.source.height, c.target.height)) / s)

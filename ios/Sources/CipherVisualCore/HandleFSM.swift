@@ -61,7 +61,7 @@ public enum RejectReason: String {
     case budgetFull
     /// 单个请求在最低可用档即超总预算：排队会永久饿死队列、挤占也放不下，直接拒绝
     case overTotalBudget
-    /// 内容已不可读，无法建粒子场（引擎层判定；iOS 像素源不抛错，保留以与 Android 同构）
+    /// 内容已不可读（宿主已回收，如 view.detach），无法建粒子场。引擎按 `PixelSource.isAvailable` 判定，双端同口径
     case contentUnavailable
 }
 
@@ -122,7 +122,16 @@ public enum Admission {
 /// 帧时钟契约——与 CipherHaptic 唯一的共享面。iOS 实现 = CADisplayLink。
 public protocol FrameClock: AnyObject {
     func postFrameCallback(_ callback: FrameCallback)
+    /// 至少 `delayMs` 之后的下一个 vsync 回调（一次性）。引擎在「画面静止、只等下一个锚点」时用它，避免逐帧空转。
+    /// 默认实现退化为下一帧（行为正确，只是逐帧唤醒）——实现方应覆盖。2026-09-27 新增（contract-additive）。
+    func postFrameCallback(_ callback: FrameCallback, delayMs: Double)
     func removeFrameCallback(_ callback: FrameCallback)
+}
+
+public extension FrameClock {
+    func postFrameCallback(_ callback: FrameCallback, delayMs: Double) {
+        postFrameCallback(callback)
+    }
 }
 
 /// 一次性帧回调（引用语义，以对象身份增删）。

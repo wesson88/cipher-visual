@@ -24,9 +24,9 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      - name: core 单测 + 库 / demo 构建
+      - name: core 单测 + Android 框架层单测（mockk）+ 库 / demo 构建
         working-directory: android
-        run: ./gradlew :core:test :cipher-visual:assembleRelease :demo:assembleDebug --console=plain
+        run: ./gradlew :core:test :cipher-visual:testDebugUnitTest :cipher-visual:assembleRelease :demo:assembleDebug --console=plain
 
   ios:
     runs-on: macos-latest

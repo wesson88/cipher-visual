@@ -1,17 +1,37 @@
 import XCTest
 @testable import CipherVisualCore
 
+/// 手动帧时钟：一次性回调；支持延时回调（到期后的第一帧才投递）。
 final class ManualClock: FrameClock {
     private var callbacks: [FrameCallback] = []
-    var subscribed: Bool { !callbacks.isEmpty }
+    private var delayed: [(cb: FrameCallback, due: UInt64)] = []
+    private(set) var nowNanos: UInt64 = 0
+    /// 实际投递过的帧回调次数（用于断言静态停留不逐帧空转）
+    private(set) var delivered = 0
+    var subscribed: Bool { !callbacks.isEmpty || !delayed.isEmpty }
+    var immediatePending: Bool { !callbacks.isEmpty }
+    var delayedPending: Bool { !delayed.isEmpty }
 
     func postFrameCallback(_ callback: FrameCallback) { callbacks.append(callback) }
-    func removeFrameCallback(_ callback: FrameCallback) { callbacks.removeAll { $0 === callback } }
+
+    func postFrameCallback(_ callback: FrameCallback, delayMs: Double) {
+        delayed.removeAll { $0.cb === callback }
+        delayed.append((callback, nowNanos + UInt64(max(delayMs, 0) * 1_000_000)))
+    }
+
+    func removeFrameCallback(_ callback: FrameCallback) {
+        callbacks.removeAll { $0 === callback }
+        delayed.removeAll { $0.cb === callback }
+    }
 
     func frame(_ ms: Double) {
-        let cbs = callbacks
+        nowNanos = UInt64(ms * 1_000_000)
+        let due = delayed.filter { $0.due <= nowNanos }.map { $0.cb }
+        delayed.removeAll { $0.due <= nowNanos }
+        let cbs = callbacks + due
         callbacks.removeAll()
-        cbs.forEach { $0.doFrame(UInt64(ms * 1_000_000)) }
+        delivered += cbs.count
+        cbs.forEach { $0.doFrame(nowNanos) }
     }
 
     func run(_ from: Double, _ to: Double) {
@@ -133,7 +153,7 @@ final class EngineTests: XCTestCase {
         let engine = VisualEngine(clock: ManualClock(), config: EngineConfig(overflowStrategy: .queue, particleBudget: 40))
         _ = try engine.play(request())
         guard case let .queued(b) = try engine.play(request()) else { return XCTFail("expected queued") }
-        XCTAssertTrue(b.holdsParticleData, "排队裁决时已预建粒子场")
+        XCTAssertFalse(b.holdsParticleData, "排队期间不持粒子场（只为判超总预算才建，建完即丢）")
         var notified = false
         b.frameObserver = { notified = b.state.isTerminal }
         b.cancel(.reverse)

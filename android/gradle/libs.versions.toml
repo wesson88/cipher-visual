@@ -3,12 +3,14 @@ kotlin = "2.2.20"
 serializationJson = "1.9.0"
 junitJupiter = "5.13.4"
 agp = "8.13.0"
+mockk = "1.14.5"
 androidxCore = "1.16.0"
 
 [libraries]
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serializationJson" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 androidx-annotation = { module = "androidx.annotation:annotation", version = "1.9.1" }
 
 [plugins]

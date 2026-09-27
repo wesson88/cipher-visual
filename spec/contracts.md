@@ -97,7 +97,10 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 | 单请求超总预算 | `queue` / `dropNewest` / `dropOldest` 下，请求在最低可用档即超总预算 → 直接拒绝 `overTotalBudget`（排队会永久饿死队列）；`dropNewest` 当前占满 → `budgetFull`。拒绝原因随 `PlayResult.Rejected` / `rejectReason` 交给接入方 |
 | 取消交接 | **最新来的主动取消前一次，前一次终态回调发出后才启动最新的**。两条路径：① 同渲染位（`slot`，平台层 = View）上新请求取消该位所有未终态前任；② `dropOldest` 挤占。取消方式取新请求的 `preemptMode`（默认 teardown，可选 reverse）。未启动的前任直接撤回（先于在跑的，避免级联放行造成闪现）；teardown 同步终态后立即裁决新请求；reverse 则新请求以 `Queued` 停在 idle，等前任倒放完、终态回调后再裁决 |
 | 排队（`queue`） | **严格 FIFO**：队列非空时，新请求与交接后放行的句柄一律排到队尾，放得下也不插队；队头按入队顺序出队（golden 含 `queued` 字段的用例） |
-| 内容不可读 | 首次建粒子场读像素失败（宿主已回收位图，如 View 被 detach）→ 拒绝 `contentUnavailable`：未交给调用方的直接返回 `Rejected`，已返回 `Queued` 的以 `REJECTED` 终结；异常不逃出帧回调 |
+| 内容不可读 | 引擎只看 `PixelSource.isAvailable`（2026-09-27 新增，默认 true；Android = 位图未回收，iOS = 像素缓冲未释放）：不可读 → 拒绝 `contentUnavailable`（未交给调用方的返回 `Rejected`，已返回 `Queued` 的以 `REJECTED` 终结）；reverse 重建遇不可读 → 降为 teardown。**不吞其它异常**——粒子场构建里的异常是库自身 bug，必须暴露。双端同口径 |
+| 未启动不持粒子场 | 排队 / 等交接期间不持粒子场（排队裁决只为判超总预算才建，建完即丢），放行时重建 |
+| 帧订阅三态 | 有句柄在动（变换 / jitter / 倒放 / 淡变）→ 下一帧；画面全静止只等下一个锚点 → **一次** `postFrameCallbackDelayed`（至下个锚点）；都没有 → 退订。延时量只在一帧末尾计算，帧外状态变化先要一帧再算 |
+| play 回滚补充 | 监听器在 active 回调里抛异常：句柄同时移出运行列表并静默终态（FAILED / ERROR，不再回调），不留幽灵；`release()` 用 try/finally，回调抛异常不会让引擎卡在 releasing |
 | play 异常回滚 | 渲染位登记之后若抛异常：撤销登记与等待关系、释放预建粒子场，再向上抛 |
 | 交接后裁决 | 交接完成后重新裁决；被拒则新句柄 idle → completed（`endReason = REJECTED`，`rejectReason` 给原因）。挤占引发级联放行后必须重新裁决，不按旧计划启动 |
 | 静态停留释放 | active 且 t ≥ hold.start 且 static（`StaticTarget`）时粒子场**主动释放**，只保留渲染 target 所需；jitter 停留与减少动效不涉及 |
@@ -107,9 +110,13 @@ jitter hold（t > hold.start 且 mode=jitter）：x += 1.5·sin(w + phase)，y +
 
 ## 6b. 渲染位簿记（`RenderSlot`，平台无关）
 
-平台 View 各持一个 `RenderSlot`：「正在渲染」+「等交接」两位。新句柄挂上时，若正在渲染的前一次还在收回则进等交接位；任何句柄到终态即释放载荷（平台层回收库持有的位图），等交接的随即顶上；**挂载时句柄已终态（监听器在 active 回调里当场取消）也立即释放**。每个挂上的句柄载荷恰好释放一次（fuzz 断言）。
+平台 View 各持一个 `RenderSlot`：「正在渲染」+「等交接」两位。回调分两类：`onLayoutChanged`（正在渲染的载荷变了：挂载 / 交接顶上 / 解挂 → 重新测量）与 `onRedraw`（逐帧 → 只重绘）；测量用 `layoutPayload`（正在渲染的优先，交接期间尺寸不提前跳变）。新句柄挂上时，若正在渲染的前一次还在收回则进等交接位；任何句柄到终态即释放载荷（平台层回收库持有的位图），等交接的随即顶上；**挂载时句柄已终态（监听器在 active 回调里当场取消）也立即释放**。每个挂上的句柄载荷恰好释放一次（fuzz 断言）。
 
 iOS 另有一条：source 在 play 时**归一到 target 的 scale**（重采样），粒子场的 source / target 坐标才在同一像素空间。
+
+## 6c. 帧时钟契约（与 CipherHaptic 共享）
+
+`FrameClock`：`postFrameCallback` / `postFrameCallbackDelayed(delayMs)` / `removeFrameCallback`（同时撤销普通与延时）。`postFrameCallbackDelayed` 于 2026-09-27 新增（contract-additive，code-review high #9 选 a），默认实现退化为下一帧——未升级的实现方行为正确、只是逐帧唤醒。Android = `Choreographer.postFrameCallbackDelayed`；iOS = `DispatchQueue.main.asyncAfter` 到期后转为下一个 CADisplayLink 帧。
 
 ## 7. 句柄状态机
 
@@ -143,5 +150,6 @@ iOS 另有一条：source 在 play 时**归一到 target 的 scale**（重采样
 | 6 | 预算默认值 `LINEAR_X_FULL = 8000 / ERM_Z = 3000` | 仍是**拍值，待真机标定**（边界 §6.4） | — |
 | 7 | 新请求与前一次的关系 | 最新的取消前一次，前一次终态回调后再启动；同渲染位与 `dropOldest` 都走交接；默认 teardown、可配 reverse（2026-09-26） | 写回边界 §五/§六 |
 | 8 | 单请求超总预算 | 直接拒绝并给出原因（`overTotalBudget`），不排队（2026-09-26） | 写回边界 §六 |
+| 11 | 静态停留等锚点的唤醒方式 | FrameClock 加延时帧回调（contract-additive，CipherHaptic 同步实现），不另起定时器（2026-09-27，选项 a） | 写回边界 §八 |
 | 10 | `queue` 是否允许插队 | 严格 FIFO（2026-09-26，code-review #2 选 a） | 写回边界 §6.2 |
 | 9 | 停在最终画面的粒子资源 / reverse 超预算 | 静态停留即释放粒子场；reverse 重建过裁决，按阶梯降档，放不下降为 teardown（2026-09-26，选项 A） | 写回边界 §6.1 |

@@ -7,24 +7,40 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** 手动帧时钟：一次性回调语义同 Choreographer。 */
+/** 手动帧时钟：一次性回调语义同 Choreographer；支持延时回调（到期后的第一帧才投递）。 */
 class ManualClock : FrameClock {
     private val callbacks = ArrayList<FrameCallback>()
+    private val delayed = LinkedHashMap<FrameCallback, Long>() // 回调 → 到期时刻（ns）
     var nowNanos = 0L
-    val subscribed get() = callbacks.isNotEmpty()
+
+    /** 实际投递过的帧回调次数（用于断言静态停留不逐帧空转） */
+    var delivered = 0
+        private set
+
+    val subscribed get() = callbacks.isNotEmpty() || delayed.isNotEmpty()
+    val immediatePending get() = callbacks.isNotEmpty()
+    val delayedPending get() = delayed.isNotEmpty()
 
     override fun postFrameCallback(callback: FrameCallback) {
         callbacks += callback
     }
 
+    override fun postFrameCallbackDelayed(callback: FrameCallback, delayMillis: Long) {
+        delayed[callback] = nowNanos + delayMillis * 1_000_000
+    }
+
     override fun removeFrameCallback(callback: FrameCallback) {
         callbacks -= callback
+        delayed.remove(callback)
     }
 
     fun frame(atMs: Double) {
         nowNanos = (atMs * 1_000_000).toLong()
-        val cbs = callbacks.toList()
+        val due = delayed.filterValues { it <= nowNanos }.keys.toList()
+        due.forEach { delayed.remove(it) }
+        val cbs = callbacks.toList() + due
         callbacks.clear()
+        delivered += cbs.size
         cbs.forEach { it.doFrame(nowNanos) }
     }
 
@@ -212,7 +228,7 @@ class EngineTest {
         val engine = VisualEngine(ManualClock(), EngineConfig(overflowStrategy = OverflowStrategy.QUEUE, particleBudget = 40))
         engine.play(request())
         val b = (engine.play(request()) as PlayResult.Queued).handle
-        assertTrue(b.holdsParticleData, "排队裁决时已预建粒子场")
+        assertFalse(b.holdsParticleData, "排队期间不持粒子场（只为判超总预算才建，建完即丢）")
         var notified = false
         b.frameObserver = { notified = b.state.isTerminal }
         b.cancel(CancelMode.REVERSE)

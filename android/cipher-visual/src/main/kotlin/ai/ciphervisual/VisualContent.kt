@@ -52,6 +52,9 @@ public class ResolvedContent internal constructor(
         override val width: Int get() = bitmap.width
         override val height: Int get() = bitmap.height
         override fun argb(x: Int, y: Int): Int = bitmap.getPixel(x, y)
+
+        /** 位图被回收（宿主 View.detach / App 自己 recycle）后不可读：引擎据此拒绝而不是去读像素 */
+        override val isAvailable: Boolean get() = !bitmap.isRecycled
     }
 
     internal fun recycleIfOwned() {

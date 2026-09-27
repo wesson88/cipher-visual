@@ -104,7 +104,11 @@ public class VisualEngine(
     private var releasing = false
     private var nextQueueSeq = 0L
     private var nextId = 1L
-    private var subscribed = false
+
+    /** 帧订阅：NONE / IMMEDIATE（下一帧）/ DELAYED（画面静止，只等下一个锚点） */
+    private enum class Sub { NONE, IMMEDIATE, DELAYED }
+    private var sub = Sub.NONE
+    private var settlingFrame = false
     private val frameCallback = FrameCallback { onFrame(it) }
 
     /** 当前正在耗预算的粒子数（每帧口径）。 */
@@ -138,10 +142,15 @@ public class VisualEngine(
                 admitOrWait(handle, announced = false)
             }
         } catch (e: Throwable) {
-            // 抛出去的请求不该留在渲染位登记里（否则下次 play 会对它发终态回调）
+            // 抛出去的请求（含监听器在 active 回调里抛异常）调用方从未拿到：从队列 / 运行列表 / 渲染位里全部撤掉，
+            // 静默终态（监听器正是抛异常的一方，不再回调它），否则会留下继续发锚点、永不终态的幽灵句柄
+            queue.remove(handle)
+            handle.queued = false
             handle.clearAwaiting()
             removeFromSlot(handle)
-            handle.releaseResources()
+            running.remove(handle)
+            handle.abandon()
+            updateSubscription()
             throw e
         }
         updateSubscription()
@@ -151,11 +160,15 @@ public class VisualEngine(
     /** 销毁：撤回全部未启动句柄、teardown 全部运行句柄、退订帧时钟。生命周期清理，不是收回策略。 */
     public fun release() {
         releasing = true
-        for (h in (queue.toList() + running.flatMap { it.waiters }).distinct()) withdraw(h, EndReason.WITHDRAWN)
-        for (h in running.toList()) teardown(h, EndReason.TEARDOWN)
-        slotMembers.clear()
-        releasing = false
-        updateSubscription()
+        try {
+            for (h in (queue.toList() + running.flatMap { it.waiters }).distinct()) withdraw(h, EndReason.WITHDRAWN)
+            for (h in running.toList()) teardown(h, EndReason.TEARDOWN)
+        } finally {
+            // 监听器在终态回调里抛异常也不能让引擎卡在 releasing（否则之后的交接放行全部失效）
+            slotMembers.clear()
+            releasing = false
+            updateSubscription()
+        }
     }
 
     // ---------------------------------------------------------------- 句柄控制（VisualHandle 转调）
@@ -202,21 +215,21 @@ public class VisualEngine(
      * @param ahead 排在它前面的排队数（新请求 / 交接后放行 = 当前队长；队头出队 = 0）
      */
     private fun decide(handle: VisualHandle, ahead: Int): AdmissionDecision {
+        // 等交接 / 排队期间宿主可能已回收内容（View.detach）：不可读就拒绝，不去读像素。
+        // 只查可用性、不吞异常——粒子场构建里的其它异常是库自身 bug，必须暴露
+        if (!handle.request.source.isAvailable || !handle.request.target.isAvailable) {
+            return AdmissionDecision.Reject(RejectReason.CONTENT_UNAVAILABLE)
+        }
         val running = running.map { RunningCost(it.id, it.cost()) }
         if (handle.request.reducedMotion) {
             return Admission.decide(config.overflowStrategy, config.particleBudget, running, listOf(0), ahead)
         }
         val usage = running.sumOf { it.cost }
-        // 首次建粒子场要读内容像素：等交接 / 排队期间宿主可能已回收位图（View.detach），读失败按不可用拒绝，不让异常逃出帧回调
-        val ladder = try {
-            val c0 = handle.fieldAt(0).size
-            if (config.overflowStrategy == OverflowStrategy.DEGRADE && usage + c0 > config.particleBudget) {
-                List(Admission.LADDER_STEPS) { handle.fieldAt(it).size }
-            } else {
-                listOf(c0)
-            }
-        } catch (e: RuntimeException) {
-            return AdmissionDecision.Reject(RejectReason.CONTENT_UNAVAILABLE)
+        val c0 = handle.fieldAt(0).size
+        val ladder = if (config.overflowStrategy == OverflowStrategy.DEGRADE && usage + c0 > config.particleBudget) {
+            List(Admission.LADDER_STEPS) { handle.fieldAt(it).size }
+        } else {
+            listOf(c0)
         }
         return Admission.decide(config.overflowStrategy, config.particleBudget, running, ladder, ahead)
     }
@@ -234,7 +247,10 @@ public class VisualEngine(
                     if (!victim.state.isTerminal) handle.awaitHandoff(victim)
                 }
                 when {
-                    handle.awaiting.isNotEmpty() -> PlayResult.Queued(handle)
+                    handle.awaiting.isNotEmpty() -> {
+                        handle.dropFieldCache() // 等交接期间不持粒子场，放行时重建
+                        PlayResult.Queued(handle)
+                    }
                     // 挤占会触发被挤者的 finish → 级联放行等它交接的句柄，可能已吃掉腾出的预算：重新裁决而不是按旧计划启动
                     d.evict.isNotEmpty() -> admitOrWait(handle, announced)
                     else -> {
@@ -247,6 +263,7 @@ public class VisualEngine(
                 handle.queued = true
                 handle.queueSeq = nextQueueSeq++
                 queue.addLast(handle)
+                handle.dropFieldCache() // 排队期间不持粒子场（只为判超总预算才建的），出队时重建
                 PlayResult.Queued(handle)
             }
             is AdmissionDecision.Reject -> {
@@ -303,15 +320,11 @@ public class VisualEngine(
     }
 
     private fun reverseLevel(h: VisualHandle): Int? {
+        // 内容已被宿主提前回收：不能重建倒放，按放不下处理（降为 teardown）
+        if (!h.request.source.isAvailable || !h.request.target.isAvailable) return null
         val usage = particleUsage
         for (level in 0 until Admission.LADDER_STEPS) {
-            // 内容已被宿主提前回收等读像素失败：不能倒放，按放不下处理
-            val cost = try {
-                h.fieldAt(level).size
-            } catch (e: RuntimeException) {
-                return null
-            }
-            if (usage + cost <= config.particleBudget) return level
+            if (usage + h.fieldAt(level).size <= config.particleBudget) return level
         }
         return null
     }
@@ -372,31 +385,61 @@ public class VisualEngine(
                     head.rejectReason = d.reason
                     withdraw(head, EndReason.REJECTED)
                 }
-                AdmissionDecision.Queue -> return
+                AdmissionDecision.Queue -> {
+                    head.dropFieldCache()
+                    return
+                }
             }
         }
     }
 
+    /**
+     * 帧订阅三态：
+     * - 有句柄在动（变换 / jitter / 倒放 / 淡变）→ 下一帧；
+     * - 画面全静止、只等下一个锚点（如 static hold 等 onHoldExpired）→ 一次延时回调，不逐帧空转；
+     * - 都没有 → 退订。
+     *
+     * 延时量只在一帧结束时（时间轴刚按本帧时刻推进过）计算；帧外的状态变化不知道「现在」，先要一帧再算。
+     */
     private fun updateSubscription() {
-        val need = running.any { it.needsFrames() }
-        if (need && !subscribed) {
-            clock.postFrameCallback(frameCallback)
-            subscribed = true
-        } else if (!need && subscribed) {
-            clock.removeFrameCallback(frameCallback)
-            subscribed = false
+        val animating = running.any { it.isAnimating() }
+        val waitMs = if (animating) null else running.mapNotNull { it.msUntilNextAnchor() }.minOrNull()
+        when {
+            animating -> if (sub != Sub.IMMEDIATE) {
+                if (sub == Sub.DELAYED) clock.removeFrameCallback(frameCallback)
+                clock.postFrameCallback(frameCallback)
+                sub = Sub.IMMEDIATE
+            }
+            waitMs != null -> if (sub == Sub.NONE) {
+                if (settlingFrame) {
+                    clock.postFrameCallbackDelayed(frameCallback, kotlin.math.ceil(waitMs).toLong())
+                    sub = Sub.DELAYED
+                } else {
+                    clock.postFrameCallback(frameCallback)
+                    sub = Sub.IMMEDIATE
+                }
+            }
+            else -> if (sub != Sub.NONE) {
+                clock.removeFrameCallback(frameCallback)
+                sub = Sub.NONE
+            }
         }
     }
 
     private fun onFrame(frameTimeNanos: Long) {
         // 帧回调是一次性的（Choreographer 语义），先标记未订阅，末尾按需重订
-        subscribed = false
+        sub = Sub.NONE
         for (h in running.toList()) {
             if (h.state == HandleState.ACTIVE) advanceActive(h, frameTimeNanos)
             if (h.state == HandleState.CANCELLING) advanceReverse(h, frameTimeNanos)
         }
         drainQueue()
-        updateSubscription()
+        settlingFrame = true
+        try {
+            updateSubscription()
+        } finally {
+            settlingFrame = false
+        }
     }
 
     private fun advanceActive(h: VisualHandle, now: Long) {
@@ -554,12 +597,32 @@ public class VisualHandle internal constructor(
         }
     }
 
-    internal fun needsFrames(): Boolean = when (state) {
+    /** 画面在动：需要逐帧推进。 */
+    internal fun isAnimating(): Boolean = when (state) {
         HandleState.CANCELLING -> true
-        HandleState.ACTIVE -> timeMs < knobs.morphEnd ||
-            (knobs.holdMode == HoldMode.JITTER && !request.reducedMotion) ||
-            anchorsSorted.any { it.at > timeMs }
+        HandleState.ACTIVE -> timeMs < knobs.morphEnd || (knobs.holdMode == HoldMode.JITTER && !request.reducedMotion)
         else -> false
+    }
+
+    /** 画面静止时距下一个锚点还有多久（ms）；没有待发锚点返回 null。 */
+    internal fun msUntilNextAnchor(): Double? {
+        if (state != HandleState.ACTIVE) return null
+        val next = anchorsSorted.firstOrNull { it.at > timeMs } ?: return null
+        return next.at - timeMs
+    }
+
+    /** 未启动期间不持粒子场（排队 / 等交接），放行时重建。 */
+    internal fun dropFieldCache() {
+        fieldCache.fill(null)
+    }
+
+    /** play 失败回滚专用：静默进入终态，不回调监听器（监听器正是抛异常的一方，调用方也从未拿到句柄）。 */
+    internal fun abandon() {
+        releaseResources()
+        if (!state.isTerminal) {
+            endReason = EndReason.ERROR
+            state = HandleState.FAILED
+        }
     }
 
     internal fun render() {

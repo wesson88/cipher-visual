@@ -50,19 +50,32 @@ public class PreparedContent internal constructor(
  * 库 = 视觉内容的时间轴变换引擎：输入 source / target / timeline，输出粒子渲染 + 锚点回调 + 句柄。
  * 它不知道内容是什么意思、为什么变、变完怎样，也从不调用任何其他库。主线程使用。
  */
-public class CipherVisual(
+public class CipherVisual internal constructor(
     context: Context,
-    config: EngineConfig = EngineConfig(),
+    config: EngineConfig,
     /** 默认 Choreographer；可注入同一个时钟给 CipherHaptic 贴帧 */
-    public val frameClock: FrameClock = ChoreographerFrameClock(),
+    public val frameClock: FrameClock,
+    /** 内容解析（测试注入） */
+    private val resolve: (VisualContent) -> ResolvedContent,
 ) {
+    public constructor(
+        context: Context,
+        config: EngineConfig = EngineConfig(),
+        frameClock: FrameClock = ChoreographerFrameClock(),
+    ) : this(context, config, frameClock, ContentResolver::resolve)
+
     private val appContext = context.applicationContext
     public val engine: VisualEngine = VisualEngine(frameClock, config)
 
     /** 预热：提前解析并采样 source，play 时零采样延迟。何时预热归 App。 */
     public fun prepare(source: VisualContent, options: PlayOptions = PlayOptions()): PreparedContent {
-        val resolved = ContentResolver.resolve(source)
-        val sampled = engine.prepare(resolved.pixels, options.seed, options.gridPx, IrTemplates.DEFAULT_JITTER_PX)
+        val resolved = resolve(source)
+        val sampled = try {
+            engine.prepare(resolved.pixels, options.seed, options.gridPx, IrTemplates.DEFAULT_JITTER_PX)
+        } catch (e: Throwable) {
+            resolved.recycleIfOwned()
+            throw e
+        }
         return PreparedContent(resolved, sampled, options)
     }
 
@@ -74,7 +87,11 @@ public class CipherVisual(
         holdMs: Long,
         options: PlayOptions = PlayOptions(),
         listener: VisualListener? = null,
-    ): PlayResult = play(view, template(effect, holdMs, options), ContentResolver.resolve(source), null, target, options, listener)
+    ): PlayResult {
+        // 先生成模板（不支持的 effect 在此抛出），再解析内容——抛错时还没有任何库持有的位图
+        val ir = template(effect, holdMs, options)
+        return play(view, ir, resolve(source), null, target, options, listener)
+    }
 
     public fun play(
         view: CipherVisualView,
@@ -85,8 +102,10 @@ public class CipherVisual(
         listener: VisualListener? = null,
     ): PlayResult {
         check(!source.consumed) { "PreparedContent 是一次性的，已被使用" }
+        // 先生成模板再标记已用：不支持的 effect 抛出时 PreparedContent 仍归调用方、仍可用，不泄漏也不作废
+        val ir = template(effect, holdMs, source.options)
         source.consumed = true
-        return play(view, template(effect, holdMs, source.options), source.resolved, source.sampled, target, source.options, listener)
+        return play(view, ir, source.resolved, source.sampled, target, source.options, listener)
     }
 
     /** 直接喂 IR（设计师工具导出 / 自定义时间轴）。IR 不合法抛 [IrInvalidException]。 */
@@ -97,7 +116,7 @@ public class CipherVisual(
         target: VisualContent,
         options: PlayOptions = PlayOptions(),
         listener: VisualListener? = null,
-    ): PlayResult = play(view, ir, ContentResolver.resolve(source), null, target, options, listener)
+    ): PlayResult = play(view, ir, resolve(source), null, target, options, listener)
 
     /** 销毁：teardown 全部句柄并退订帧时钟。 */
     public fun release() {
@@ -116,9 +135,15 @@ public class CipherVisual(
         options: PlayOptions,
         listener: VisualListener?,
     ): PlayResult {
-        val tgt = ContentResolver.resolve(target)
-        val reduced = options.respectReducedMotion && isReducedMotionEnabled()
+        // source 已解析（库可能持有其位图）：target 解析失败也必须回收 source
+        val tgt = try {
+            resolve(target)
+        } catch (e: Throwable) {
+            source.recycleIfOwned()
+            throw e
+        }
         val result = try {
+            val reduced = options.respectReducedMotion && isReducedMotionEnabled()
             // 渲染位 = view：同一 view 上新请求先取消前一次（库保证一个 view 同时只渲染一个句柄）
             engine.play(PlayRequest(ir, source.pixels, tgt.pixels, listener, reduced, prepared, slot = view, preemptMode = options.preemptMode))
         } catch (e: Throwable) {

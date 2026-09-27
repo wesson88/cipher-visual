@@ -23,6 +23,16 @@ public class ChoreographerFrameClock : FrameClock {
         choreographer.postFrameCallback(w)
     }
 
+    override fun postFrameCallbackDelayed(callback: FrameCallback, delayMillis: Long) {
+        val w = wrappers.getOrPut(callback) {
+            Choreographer.FrameCallback { nanos ->
+                wrappers.remove(callback)
+                callback.doFrame(nanos)
+            }
+        }
+        choreographer.postFrameCallbackDelayed(w, delayMillis)
+    }
+
     override fun removeFrameCallback(callback: FrameCallback) {
         wrappers.remove(callback)?.let { choreographer.removeFrameCallback(it) }
     }

@@ -11,7 +11,7 @@ class RenderSlotTest {
 
     private class Fixture {
         val released = ArrayList<String>()
-        val slot = RenderSlot<String>(onRelease = { released += it }, onChanged = {})
+        val slot = RenderSlot<String>(onRelease = { released += it }, onLayoutChanged = {})
     }
 
     @Test

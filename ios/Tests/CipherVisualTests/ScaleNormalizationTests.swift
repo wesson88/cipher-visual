@@ -46,3 +46,26 @@ final class ScaleNormalizationTests: XCTestCase {
     }
 }
 #endif
+
+#if canImport(UIKit)
+/// 选项 a：DisplayLinkFrameClock 的延时回调——到期后投递，remove 能撤销。
+final class DisplayLinkDelayedTests: XCTestCase {
+    func testDelayedCallbackFiresAfterDelay() {
+        let clock = DisplayLinkFrameClock()
+        let fired = expectation(description: "fired")
+        let cb = FrameCallback { _ in fired.fulfill() }
+        clock.postFrameCallback(cb, delayMs: 100)
+        wait(for: [fired], timeout: 2)
+    }
+
+    func testRemoveCancelsPendingDelayedCallback() {
+        let clock = DisplayLinkFrameClock()
+        let fired = expectation(description: "not fired")
+        fired.isInverted = true
+        let cb = FrameCallback { _ in fired.fulfill() }
+        clock.postFrameCallback(cb, delayMs: 100)
+        clock.removeFrameCallback(cb)
+        wait(for: [fired], timeout: 0.5)
+    }
+}
+#endif

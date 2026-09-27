@@ -17,6 +17,12 @@ public interface PixelSource {
 
     /** 打包 ARGB（0xAARRGGBB） */
     public fun argb(x: Int, y: Int): Int
+
+    /**
+     * 内容是否仍可读（平台层：位图未被回收）。不可读时引擎不建粒子场，按 `contentUnavailable` 拒绝 / 降为 teardown。
+     * 默认 true。2026-09-27 新增（contract-additive）。
+     */
+    public val isAvailable: Boolean get() = true
 }
 
 /** 行主序 IntArray 的 [PixelSource]。 */

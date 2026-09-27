@@ -9,6 +9,7 @@ import kotlin.test.assertTrue
 /** 可回收像素源：回收后读取抛异常，模拟 Android 已 recycle 的 Bitmap。 */
 class RecyclablePixels(override val width: Int, override val height: Int, private val color: Int = 0xFF112233.toInt()) : PixelSource {
     var recycled = false
+    override val isAvailable: Boolean get() = !recycled
     override fun argb(x: Int, y: Int): Int {
         check(!recycled) { "Can't call getPixel() on a recycled bitmap" }
         return color
@@ -133,7 +134,7 @@ class ReviewFixesTest {
             }
         }
         val released = ArrayList<String>()
-        val slot = RenderSlot<String>(onRelease = { released += it }, onChanged = {})
+        val slot = RenderSlot<String>(onRelease = { released += it }, onLayoutChanged = {})
         val h = (engine.play(req(listener = canceller, slot = slot)) as PlayResult.Started).handle
         assertTrue(h.state.isTerminal, "play 返回 Started，但句柄已在回调里终态")
         slot.attach(h, "payload")

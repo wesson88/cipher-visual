@@ -2,10 +2,17 @@ import Foundation
 
 /// 内容无关的像素源：库只认像素。平台层负责把 UIImage / 文本渲染成它。
 public protocol PixelSource: AnyObject {
+    /// 内容是否仍可读（平台层：像素缓冲未释放）。不可读时引擎不建粒子场，按 contentUnavailable 拒绝 / 降为 teardown。
+    /// 默认 true（见扩展）。2026-09-27 新增（contract-additive）。
+    var isAvailable: Bool { get }
     var width: Int { get }
     var height: Int { get }
     /// 非预乘 ARGB（0xAARRGGBB）
     func argb(x: Int, y: Int) -> UInt32
+}
+
+public extension PixelSource {
+    var isAvailable: Bool { true }
 }
 
 public final class ArrayPixels: PixelSource {

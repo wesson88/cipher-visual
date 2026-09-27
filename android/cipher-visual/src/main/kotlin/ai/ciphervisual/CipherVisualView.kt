@@ -25,15 +25,17 @@ public class CipherVisualView @JvmOverloads constructor(
 ) : View(context, attrs) {
     internal class Contents(val source: ResolvedContent, val target: ResolvedContent)
 
-    private val slot = RenderSlot<Contents>(
+    internal val slot = RenderSlot<Contents>(
         onRelease = {
             it.source.recycleIfOwned()
             it.target.recycleIfOwned()
         },
-        onChanged = {
+        // 只在正在渲染的内容变了（挂载 / 交接顶上 / 解挂）时重排；逐帧只重绘
+        onLayoutChanged = {
             requestLayout()
             invalidate()
         },
+        onRedraw = { invalidate() },
     )
     private var points = FloatArray(0)
     private val particlePaint = Paint().apply {
@@ -44,6 +46,9 @@ public class CipherVisualView @JvmOverloads constructor(
 
     /** 最新挂上的句柄（可能仍在等交接，也可能已终态）。 */
     public val attachedHandle: VisualHandle? get() = slot.latestHandle
+
+    /** 正在渲染的句柄（交接期间是还在倒放的前一次）。 */
+    public val renderingHandle: VisualHandle? get() = slot.currentHandle
 
     internal fun attach(handle: VisualHandle, source: ResolvedContent, target: ResolvedContent) {
         slot.attach(handle, Contents(source, target))
@@ -56,7 +61,8 @@ public class CipherVisualView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val c = slot.latestPayload
+        // 正在渲染的优先：交接期间前一次还在倒放，尺寸不能提前跳到新内容
+        val c = slot.layoutPayload
         val w = max(c?.source?.width ?: 0, c?.target?.width ?: 0) + paddingLeft + paddingRight
         val h = max(c?.source?.height ?: 0, c?.target?.height ?: 0) + paddingTop + paddingBottom
         setMeasuredDimension(resolveSize(w, widthMeasureSpec), resolveSize(h, heightMeasureSpec))

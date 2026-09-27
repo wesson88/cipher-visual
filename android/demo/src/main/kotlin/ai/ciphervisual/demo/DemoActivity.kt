@@ -176,8 +176,12 @@ class DemoActivity : Activity() {
         if (result is PlayResult.Rejected) statusView.append("\n第 ${i + 1} 条被拒（${result.reason.wire}）")
     }
 
+    /** 每行的「正在渲染」与「等交接」两个句柄都要处理：只取最新的会漏掉仍在倒放的前一次。 */
     private fun forEachHandle(block: (VisualHandle) -> Unit) {
-        rows.mapNotNull { it.second.attachedHandle }.filter { !it.state.isTerminal }.forEach(block)
+        rows.flatMap { listOfNotNull(it.second.renderingHandle, it.second.attachedHandle) }
+            .distinct()
+            .filter { !it.state.isTerminal }
+            .forEach(block)
     }
 
     private fun button(text: String, onClick: () -> Unit) = Button(this).apply {
